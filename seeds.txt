@@ -1,0 +1,22 @@
+# Alpha seed expressions for grade.py / cli.py
+# Format: one FastExpr expression per line
+# Lines starting with # are comments and are ignored
+# Settings: USA, TOP3000, delay=1, decay=15
+
+# Proven working expression from test_sim.py (price-reversion)
+close / ts_mean(close, 20) - 1
+
+# Momentum: rank of average recent returns (higher = stronger upward trend)
+rank(ts_mean(returns, 10))
+
+# Reversal: negative rank of short-term returns (contrarian signal)
+-rank(ts_mean(returns, 5))
+
+# Volume normalization: zscore of volume relative to its 20-day mean
+zscore(volume / ts_mean(volume, 20))
+
+# Value / mean-reversion: z-score of close relative to rolling mean
+zscore(close - ts_mean(close, 10))
+
+# Volatility-adjusted momentum: returns scaled by trailing standard deviation
+rank(ts_mean(returns, 20) / (ts_std_dev(returns, 20) + 0.0001))
