@@ -1,0 +1,25 @@
+venv/
+.DS_Store
+.env
+.wq_session.json
+__pycache__/
+*.pyc
+results/
+*.db
+alpha_kb.db
+alpha_kb.db-shm
+alpha_kb.db-wal
+
+# GSD planning artifacts — kept local (contain real alpha IDs pulled from the DB)
+.planning/
+
+# Generated alpha candidates to grade/submit locally — your IP, never publish
+seeds/
+# Thesis notes contain real alpha IDs/scores/expressions — keep local only.
+# The vault structure (dirs + README) stays public; the notes do not.
+alpha-kb/Theses/*.md
+!alpha-kb/Theses/.gitkeep
+alpha-kb/Archetypes/*.md
+!alpha-kb/Archetypes/.gitkeep
+alpha-kb/Failures/*.md
+!alpha-kb/Failures/.gitkeep

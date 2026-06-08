@@ -1,0 +1,5 @@
+autobrain-sim==1.0.0
+python-dotenv
+
+# dev / test
+pytest
