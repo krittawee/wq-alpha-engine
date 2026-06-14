@@ -27,16 +27,14 @@ import validate
 # ---------------------------------------------------------------------------
 # Archetype skeleton expressions (LOCKED — 02-GROUNDING.md §Archetype taxonomy)
 # These are the canonical grounded skeletons. Each passes validate.validate.
-# NOTE: winsorize takes positional numeric arg (not std= keyword) to avoid the
-#       validator parsing 'std' as an unknown data-field token.
+# NOTE: winsorize uses std= named param (BRAIN catalog: winsorize(x, std=4)).
 # NOTE: nws12_afterhsz_sl is VECTOR type — always wrapped in vec_avg.
 # ---------------------------------------------------------------------------
 
 _SKELETONS: dict[str, str] = {
     "reversal": "rank(reverse(ts_delta(close, 5)))",
     "momentum": "rank(ts_decay_linear(ts_delta(ts_delay(close, 21), 231), 5))",
-    # winsorize(signal, 4) — positional arg avoids 'std' being parsed as a field token
-    "value_garp": "group_neutralize(winsorize(rank(divide(bookvalue_ps, close)), 4), industry)",
+    "value_garp": "group_neutralize(winsorize(rank(divide(bookvalue_ps, close)), std=4), industry)",
     "quality": "group_zscore(rank(divide(operating_income, assets)), industry)",
     "growth": "rank(divide(ts_delta(actual_sales_value_annual, 252), abs(ts_delay(actual_sales_value_annual, 252))))",
     "low_volatility": "rank(reverse(ts_std_dev(returns, 60)))",
@@ -141,7 +139,7 @@ def _make_value_garp_variants(ops: list[str], fields: list[str]) -> list[str]:
 
     # winsorize variant with subindustry neut
     candidates.append(
-        "group_neutralize(winsorize(rank(divide(bookvalue_ps, close)), 4), subindustry)"
+        "group_neutralize(winsorize(rank(divide(bookvalue_ps, close)), std=4), subindustry)"
     )
 
     # cashflow_op / cap ratio
@@ -153,7 +151,7 @@ def _make_value_garp_variants(ops: list[str], fields: list[str]) -> list[str]:
     # EPS ratio variant
     if "actual_eps_value_quarterly" in fields and "close" in fields:
         candidates.append(
-            "group_neutralize(winsorize(rank(divide(actual_eps_value_quarterly, close)), 4), industry)"
+            "group_neutralize(winsorize(rank(divide(actual_eps_value_quarterly, close)), std=4), industry)"
         )
 
     return candidates
@@ -177,7 +175,7 @@ def _make_quality_variants(ops: list[str], fields: list[str]) -> list[str]:
     # winsorize wrapper
     if "winsorize" in ops:
         candidates.append(
-            "group_neutralize(winsorize(rank(divide(operating_income, assets)), 4), industry)"
+            "group_neutralize(winsorize(rank(divide(operating_income, assets)), std=4), industry)"
         )
 
     # debt_lt ratio (leverage/quality signal)
@@ -367,6 +365,7 @@ def generate_candidates(
     conn: sqlite3.Connection,
     thesis: dict,
     n: Optional[int] = None,
+    delay: Optional[int] = None,
 ) -> list[dict]:
     """Generate 4-8 FastExpr candidate records from a thesis dict.
 
@@ -377,6 +376,10 @@ def generate_candidates(
             source_operators, source_datafields.
     n:      Desired count. Clamped to [4, 8]. If None, uses all grounded variants
             (up to 8, at least 4).
+    delay:  When provided (int), dedup is keyed on (expression, delay) so that a
+            delay-0 candidate is NOT dropped because the same expression exists
+            under delay=1.  When None (default), dedup uses expression only —
+            preserving existing behavior for all callers that do not pass delay.
 
     Returns
     -------
@@ -385,7 +388,8 @@ def generate_candidates(
         archetype:          str — inherited from thesis (D-04)
         valid:              bool — True if validate.validate passes
         validation_reason:  str — "" if valid, else the rejection reason
-        dedup_alpha_id:     Optional[str] — existing alpha_id if duplicate, else None
+        dedup_alpha_id:     Optional[str] — existing alpha_id if duplicate
+                            under the same (expression, delay) key, else None
 
     Criterion 2 (no unknown-token rejections for queueable set): composition
     logic uses ONLY catalog-present tokens. Any candidate that fails validate
@@ -422,7 +426,7 @@ def generate_candidates(
     candidates: list[dict] = []
     for expr in exprs:
         valid, reason = validate.validate(conn, expr)
-        dedup_id = db.expr_exists(conn, expr)
+        dedup_id = db.expr_exists(conn, expr, delay=delay)
         candidates.append({
             "expression": expr,
             "archetype": archetype,  # D-04 inheritance

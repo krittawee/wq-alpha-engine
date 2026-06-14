@@ -170,6 +170,52 @@ def _date_overlap_returns(
 
 
 # ---------------------------------------------------------------------------
+# PnL response parser (handles BRAIN's schema+records format)
+# ---------------------------------------------------------------------------
+
+def _parse_pnl_response(pnl_data: dict) -> tuple:
+    """Extract (dates_list, pnls_list) from BRAIN's PnL response.
+
+    BRAIN returns a {schema, records} envelope rather than {pnls, dates}.
+    The schema sub-object varies across BRAIN versions:
+      - schema is a list → column name list directly
+      - schema has key "name" (list) → use schema["name"]
+      - schema has key "properties" (dict) → use list(schema["properties"].keys())
+      - fallback → assume index 0 = date, index 1 = pnl
+
+    Column name matching is case-insensitive.  Returns ([], []) on any
+    parsing exception (D-13 graceful degrade).
+    """
+    try:
+        schema = pnl_data.get("schema", [])
+        records = pnl_data.get("records", [])
+
+        # Extract column name list from schema
+        if isinstance(schema, list):
+            col_names = schema
+        elif isinstance(schema, dict):
+            if "name" in schema and isinstance(schema["name"], list):
+                col_names = schema["name"]
+            elif "properties" in schema and isinstance(schema["properties"], dict):
+                col_names = list(schema["properties"].keys())
+            else:
+                col_names = []
+        else:
+            col_names = []
+
+        # Find date and pnl column indices (case-insensitive)
+        lower_cols = [c.lower() if isinstance(c, str) else "" for c in col_names]
+        date_idx = lower_cols.index("date") if "date" in lower_cols else 0
+        pnl_idx = lower_cols.index("pnl") if "pnl" in lower_cols else 1
+
+        dates = [row[date_idx] for row in records]
+        pnls = [row[pnl_idx] for row in records]
+        return dates, pnls
+    except Exception:
+        return [], []
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -202,8 +248,7 @@ def fetch_and_cache_pnl(
     except Exception:
         return None  # timeout / malformed → graceful degrade (D-13)
 
-    pnls = pnl_data.get("pnls", [])
-    dates = pnl_data.get("dates", [])
+    dates, pnls = _parse_pnl_response(pnl_data)
     # Log actual keys on first fetch to help catch schema mismatch (A1 mitigation)
     print(f"[selfcorr] fetch_and_cache_pnl({alpha_id}): keys={list(pnl_data.keys())}, "
           f"pnls={len(pnls)}, dates={len(dates)}")

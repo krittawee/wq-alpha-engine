@@ -19,6 +19,8 @@ CRITICAL: ZERO grade/simulate/login calls.
 """
 
 import sys
+import unittest
+import unittest.mock
 import pytest
 import sqlite3
 
@@ -498,15 +500,13 @@ def test_wikilinks_in_notes(tmp_path, conn):
 def test_grade_records_brain_actual_settings():
     """BRAIN is the source of truth for simulation settings.
 
-    BRAIN silently coerces some settings (e.g., delay=0 → delay=1). grade_one
-    must persist what BRAIN actually ran, not what was requested. This test
-    passes settings={"delay": 0, ...} (the REQUEST) but configures the mock
-    BRAIN response to carry {"settings": {"delay": 1, ...}} — the coerced value.
-    After grade_one completes, the DB row must show delay=1 (BRAIN's value) in
-    both the delay column and settings_json["delay"].
+    After Plan 05-01 changes, coerced alphas are DISCARDED (not persisted).
+    This test uses a no-coercion scenario: requested delay=1 and BRAIN also
+    returns delay=1. The test still asserts DB row shows delay=1 from BRAIN's
+    response, while avoiding the new discard logic that fires on mismatch.
 
-    Red-green contract: fails against the old grade.py (which wrote active_settings
-    verbatim); passes with the fixed grade.py (which reads alpha.get("settings")).
+    Red-green contract: verifies that when delays match, grade_one correctly
+    persists the alpha row with BRAIN's returned settings value.
     """
     import json
     from unittest.mock import MagicMock, patch
@@ -517,6 +517,7 @@ def test_grade_records_brain_actual_settings():
     conn = db.init_db(":memory:")
 
     # Build mock BRAIN response: alpha dict with "settings" carrying delay=1
+    # REQUEST delay=1 and BRAIN returns delay=1 — no coercion, alpha is persisted.
     mock_alpha_dict = {
         "id": "TEST_BRAIN_ACTUAL",
         "is": {
@@ -525,7 +526,7 @@ def test_grade_records_brain_actual_settings():
             "checks": [{"result": "PASS", "name": "SHARPE"}],
         },
         "settings": {
-            "delay": 1,
+            "delay": 1,              # BRAIN returns delay=1 (matches request)
             "region": "USA",
             "universe": "TOP3000",
             "decay": 15,
@@ -555,14 +556,7 @@ def test_grade_records_brain_actual_settings():
             conn,
             "close / open",
             run_id="test-run",
-            settings={
-                "delay": 0,          # REQUEST: delay=0
-                "region": "USA",
-                "universe": "TOP3000",
-                "decay": 15,
-                "neutralization": "SUBINDUSTRY",
-                "truncation": 0.08,
-            },
+            delay=1,                 # REQUEST: delay=1 (matches BRAIN response)
         )
 
     row = conn.execute(
@@ -580,15 +574,614 @@ def test_grade_records_brain_actual_settings():
     assert col_delay == 1, (
         f"GRADE-SETTINGS-FIDELITY FAIL: delay column is {col_delay!r}; "
         f"expected 1 (BRAIN's returned value). grade_one must persist BRAIN's "
-        f"returned settings, not the requested settings (delay=0 was the request)."
+        f"returned settings, not the requested settings."
     )
     assert sj_delay == 1, (
         f"GRADE-SETTINGS-FIDELITY FAIL: settings_json['delay'] is {sj_delay!r}; "
         f"expected 1 (BRAIN's returned value). settings_json must reflect what "
-        f"BRAIN actually ran, not what was requested."
+        f"BRAIN actually ran."
     )
 
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# DELAY COERCION WARN+DISCARD (Plan 05-01 D-03 regression tests)
+# ---------------------------------------------------------------------------
+
+
+def test_grade_coercion_warning():
+    """D-03: When BRAIN returns a different delay than requested, grade_one must
+    print a COERCION WARNING to stderr and return WITHOUT persisting the alpha.
+
+    Scenario: grade_one called with delay=0; mock BRAIN response carries
+    settings.delay=1 (coercion). Verifies stderr warning and no DB row.
+    """
+    import contextlib
+    import io
+    from unittest.mock import MagicMock, patch
+
+    import db
+    import grade
+
+    conn = db.init_db(":memory:")
+
+    mock_alpha_dict = {
+        "id": "TEST_COERCE_WARN",
+        "is": {
+            "sharpe": 1.5,
+            "fitness": 1.2,
+            "checks": [{"result": "PASS", "name": "SHARPE"}],
+        },
+        "settings": {
+            "delay": 1,              # BRAIN coerced: returns delay=1
+            "region": "USA",
+            "universe": "TOP3000",
+            "decay": 15,
+            "neutralization": "SUBINDUSTRY",
+            "truncation": 0.08,
+        },
+    }
+
+    mock_sim = MagicMock()
+    mock_sim.wait.return_value = None
+    mock_sim.alpha_id = "TEST_COERCE_WARN"
+    mock_sim.get_alpha.return_value = mock_alpha_dict
+
+    mock_client = MagicMock()
+    mock_client.simulate.return_value = mock_sim
+
+    stderr_buf = io.StringIO()
+    with patch("validate.validate", return_value=(True, None)), \
+         patch("selfcorr.proxy_gate", return_value=False), \
+         patch("selfcorr.fetch_and_cache_pnl", return_value=None), \
+         patch("grade.trigger_correlation_check", return_value=None), \
+         patch("grade.poll_correlation", return_value={}), \
+         contextlib.redirect_stderr(stderr_buf):
+        result = grade.grade_one(
+            mock_client,
+            conn,
+            "rank(vwap)",
+            run_id="test-coerce",
+            delay=0,                 # REQUEST: delay=0
+        )
+
+    stderr_output = stderr_buf.getvalue()
+    assert "COERCION WARNING" in stderr_output, (
+        f"Expected 'COERCION WARNING' in stderr; got: {stderr_output!r}"
+    )
+    assert "TEST_COERCE_WARN" in stderr_output, (
+        f"Expected alpha_id 'TEST_COERCE_WARN' in stderr warning; got: {stderr_output!r}"
+    )
+
+    row = conn.execute(
+        "SELECT alpha_id FROM alphas WHERE alpha_id=?",
+        ("TEST_COERCE_WARN",),
+    ).fetchone()
+    assert row is None, (
+        "grade_one persisted a coerced alpha — it must be discarded (no DB row written)"
+    )
+
+    assert result.get("status") == "coerced", (
+        f"Expected result['status'] == 'coerced'; got {result.get('status')!r}"
+    )
+
+    conn.close()
+
+
+def test_grade_no_coercion_when_delay_matches():
+    """D-03: When BRAIN returns the same delay as requested, no COERCION WARNING
+    is emitted and the alpha IS persisted to the DB.
+
+    Scenario: grade_one called with delay=0; mock BRAIN response carries
+    settings.delay=0 (no coercion). Verifies no warning and DB row written.
+    """
+    import contextlib
+    import io
+    from unittest.mock import MagicMock, patch
+
+    import db
+    import grade
+
+    conn = db.init_db(":memory:")
+
+    mock_alpha_dict = {
+        "id": "TEST_NO_COERCE",
+        "is": {
+            "sharpe": 1.5,
+            "fitness": 1.2,
+            "checks": [{"result": "PASS", "name": "SHARPE"}],
+        },
+        "settings": {
+            "delay": 0,              # BRAIN returns delay=0 — matches request
+            "region": "USA",
+            "universe": "TOP3000",
+            "decay": 15,
+            "neutralization": "SUBINDUSTRY",
+            "truncation": 0.08,
+        },
+    }
+
+    mock_sim = MagicMock()
+    mock_sim.wait.return_value = None
+    mock_sim.alpha_id = "TEST_NO_COERCE"
+    mock_sim.get_alpha.return_value = mock_alpha_dict
+
+    mock_client = MagicMock()
+    mock_client.simulate.return_value = mock_sim
+
+    stderr_buf = io.StringIO()
+    with patch("validate.validate", return_value=(True, None)), \
+         patch("selfcorr.proxy_gate", return_value=False), \
+         patch("selfcorr.fetch_and_cache_pnl", return_value=None), \
+         patch("grade.trigger_correlation_check", return_value=None), \
+         patch("grade.poll_correlation", return_value={}), \
+         contextlib.redirect_stderr(stderr_buf):
+        result = grade.grade_one(
+            mock_client,
+            conn,
+            "rank(vwap)",
+            run_id="test-no-coerce",
+            delay=0,                 # REQUEST: delay=0
+        )
+
+    stderr_output = stderr_buf.getvalue()
+    assert "COERCION WARNING" not in stderr_output, (
+        f"Unexpected COERCION WARNING in stderr when delays match; got: {stderr_output!r}"
+    )
+
+    row = conn.execute(
+        "SELECT alpha_id FROM alphas WHERE alpha_id=?",
+        ("TEST_NO_COERCE",),
+    ).fetchone()
+    assert row is not None, (
+        "grade_one did not persist alpha when delays match — it should be written to DB"
+    )
+
+    conn.close()
+
+
+def test_grade_many_forwards_delay():
+    """grade_many must forward delay= to every grade_one call.
+
+    Calls grade_many with delay=0 and two expressions.
+    Patches grade.grade_one to capture call arguments.
+    Asserts every call received delay=0 as a keyword argument.
+    """
+    from unittest.mock import MagicMock, patch, call
+
+    import db
+    import grade
+
+    conn = db.init_db(":memory:")
+    mock_client = MagicMock()
+
+    fake_result = {"expression": "x", "status": "pass", "alpha_id": "fake"}
+
+    with patch.object(grade, "grade_one", return_value=fake_result) as mock_grade_one:
+        grade.grade_many(
+            mock_client,
+            conn,
+            ["rank(vwap)", "rank(volume)"],
+            run_id="r1",
+            delay=0,
+        )
+
+    assert mock_grade_one.call_count == 2, (
+        f"Expected 2 grade_one calls; got {mock_grade_one.call_count}"
+    )
+    for c in mock_grade_one.call_args_list:
+        assert c.kwargs.get("delay") == 0, (
+            f"grade_one call did not receive delay=0; call args: {c}"
+        )
+
+    conn.close()
+
+
+def test_grade_coercion_with_none_returned_delay():
+    """D-03 None-safe normalization: when BRAIN omits the delay key entirely from
+    settings (returns None from .get("delay")), the normalization must NOT raise
+    TypeError and must fall back to the requested delay.
+
+    When the fallback makes requested == resolved (both are the requested value),
+    no coercion fires and the alpha IS persisted.
+
+    This exercises the branch: resolved_delay_raw is None → resolved_delay_int = requested_delay_int
+    """
+    import contextlib
+    import io
+    from unittest.mock import MagicMock, patch
+
+    import db
+    import grade
+
+    conn = db.init_db(":memory:")
+
+    # BRAIN returns settings={} — no "delay" key (resolved_delay_raw is None)
+    mock_alpha_dict = {
+        "id": "TEST_NONE_DELAY",
+        "is": {
+            "sharpe": 1.5,
+            "fitness": 1.2,
+            "checks": [{"result": "PASS", "name": "SHARPE"}],
+        },
+        "settings": {},              # delay key absent
+    }
+
+    mock_sim = MagicMock()
+    mock_sim.wait.return_value = None
+    mock_sim.alpha_id = "TEST_NONE_DELAY"
+    mock_sim.get_alpha.return_value = mock_alpha_dict
+
+    mock_client = MagicMock()
+    mock_client.simulate.return_value = mock_sim
+
+    stderr_buf = io.StringIO()
+    # Should not raise TypeError even though BRAIN returned no delay
+    try:
+        with patch("validate.validate", return_value=(True, None)), \
+             patch("selfcorr.proxy_gate", return_value=False), \
+             patch("selfcorr.fetch_and_cache_pnl", return_value=None), \
+             patch("grade.trigger_correlation_check", return_value=None), \
+             patch("grade.poll_correlation", return_value={}), \
+             contextlib.redirect_stderr(stderr_buf):
+            result = grade.grade_one(
+                mock_client,
+                conn,
+                "rank(vwap)",
+                run_id="test-none-delay",
+                delay=0,             # REQUEST: delay=0
+            )
+    except TypeError as e:
+        raise AssertionError(
+            f"None-safe normalization failed — TypeError raised: {e}. "
+            f"int(None) must not be called when resolved_delay_raw is None."
+        ) from e
+
+    # When None falls back to requested_delay_int=0, resolved==requested → no coercion.
+    # The alpha IS persisted.
+    row = conn.execute(
+        "SELECT alpha_id FROM alphas WHERE alpha_id=?",
+        ("TEST_NONE_DELAY",),
+    ).fetchone()
+    assert row is not None, (
+        "grade_one should persist the alpha when BRAIN omits the delay key (None fallback = no coercion)"
+    )
+
+    # No coercion warning should appear
+    stderr_output = stderr_buf.getvalue()
+    assert "COERCION WARNING" not in stderr_output, (
+        f"Unexpected COERCION WARNING when delay key is absent from BRAIN response; got: {stderr_output!r}"
+    )
+
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# BUG-DELAY-DEDUP: delay-aware novelty dedup regression tests
+# ---------------------------------------------------------------------------
+
+
+def test_expr_exists_delay_aware():
+    """db.expr_exists with delay= only matches rows with the same (expression, delay)."""
+    conn = db.init_db(':memory:')
+    conn.execute("INSERT INTO alphas (alpha_id, expression, delay) VALUES ('A1', 'rank(returns)', 1)")
+    conn.commit()
+    # delay=0 must NOT match the delay-1 row
+    assert db.expr_exists(conn, 'rank(returns)', delay=0) is None
+    # delay=1 MUST match
+    assert db.expr_exists(conn, 'rank(returns)', delay=1) == 'A1'
+    # no delay arg (backward compat) MUST match
+    assert db.expr_exists(conn, 'rank(returns)') == 'A1'
+    conn.close()
+
+
+def test_queueable_delay0_passes_when_only_delay1_exists():
+    """A candidate with dedup_alpha_id=None passes queueable even if a delay-1 row exists.
+
+    This verifies the full chain: after the fix, generate_candidates sets
+    dedup_alpha_id=None for a delay-0 candidate when only a delay-1 row exists.
+    """
+    import ideator
+
+    conn = db.init_db(':memory:')
+    conn.execute("INSERT INTO alphas (alpha_id, expression, delay) VALUES ('A1', 'rank(returns)', 1)")
+    conn.commit()
+
+    # Simulate what generate_candidates now does: dedup against delay=0
+    expr = 'rank(returns)'
+    dedup_id = db.expr_exists(conn, expr, delay=0)  # must be None
+    candidate = {
+        'expression': expr,
+        'archetype': 'momentum',
+        'valid': True,
+        'validation_reason': '',
+        'dedup_alpha_id': dedup_id,
+    }
+    result = ideator.queueable([candidate])
+    assert len(result) == 1, f'Expected 1 queueable candidate, got {len(result)}'
+    assert result[0]['expression'] == expr
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# BUG-SELFCORR-PNL: schema+records PnL parser regression test
+# ---------------------------------------------------------------------------
+
+
+def test_fetch_and_cache_pnl_schema_records(tmp_path):
+    """fetch_and_cache_pnl correctly parses BRAIN's {schema, records} response."""
+    import json
+    import pathlib
+    import selfcorr
+    from unittest.mock import MagicMock
+
+    conn = db.init_db(':memory:')
+    # Insert a row so the UPDATE in fetch_and_cache_pnl has something to match
+    conn.execute("INSERT INTO alphas (alpha_id, expression) VALUES ('ALPHA1', 'rank(returns)')")
+    conn.commit()
+
+    mock_client = MagicMock()
+    mock_client.get_pnl.return_value = {
+        'schema': {'name': ['date', 'pnl']},
+        'records': [
+            ['2024-01-02', 0.001],
+            ['2024-01-03', -0.002],
+            ['2024-01-04', 0.003],
+        ]
+    }
+
+    cache_dir = str(tmp_path / 'pnl_cache')
+    path = selfcorr.fetch_and_cache_pnl(mock_client, 'ALPHA1', conn, pnl_dir=cache_dir)
+    assert path is not None, 'Expected a cache path, got None'
+
+    cached = json.loads(pathlib.Path(path).read_text())
+    assert len(cached['pnls']) == 3, f"Expected 3 pnls, got {len(cached['pnls'])}"
+    assert len(cached['dates']) == 3, f"Expected 3 dates, got {len(cached['dates'])}"
+    assert cached['pnls'][0] == 0.001
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
+# FIX-1: validate.py named-arg key exclusion from bare_field_tokens
+# ---------------------------------------------------------------------------
+
+
+class TestValidateNamedArgKeys(unittest.TestCase):
+    """FIX-1: validate.py must not flag named-param keys as unknown data fields."""
+
+    def setUp(self):
+        import sqlite3
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.execute(
+            "CREATE TABLE operators (name TEXT PRIMARY KEY)"
+        )
+        self.conn.execute(
+            "CREATE TABLE datafields (id TEXT PRIMARY KEY)"
+        )
+        # Seed the operators and data fields used in winsorize expressions
+        for op in ("winsorize", "rank", "divide", "group_neutralize",
+                   "ts_decay_linear"):
+            self.conn.execute("INSERT INTO operators VALUES (?)", (op,))
+        for field in ("close", "bookvalue_ps"):
+            self.conn.execute("INSERT INTO datafields VALUES (?)", (field,))
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_winsorize_named_std_passes(self):
+        """winsorize(x, std=4) must validate as True — std is a named param."""
+        import validate
+        ok, reason = validate.validate(
+            self.conn,
+            "winsorize(rank(divide(bookvalue_ps, close)), std=4)"
+        )
+        self.assertTrue(ok, f"Expected valid but got: {reason}")
+        self.assertEqual(reason, "")
+
+    def test_std_not_reported_as_unknown_field(self):
+        """validate must NOT report 'unknown data field: std'."""
+        import validate
+        ok, reason = validate.validate(
+            self.conn,
+            "winsorize(close, std=4)"
+        )
+        self.assertNotIn("std", reason,
+            f"'std' should not appear in rejection reason, got: {reason}")
+
+    def test_genuine_unknown_field_still_fails(self):
+        """A genuinely unknown field must still fail validation."""
+        import validate
+        ok, reason = validate.validate(
+            self.conn,
+            "winsorize(notafield, std=4)"
+        )
+        self.assertFalse(ok)
+        self.assertIn("notafield", reason)
+
+    def test_dense_named_param_ts_decay_linear(self):
+        """ts_decay_linear dense=false must not flag 'dense' or 'false' as fields."""
+        import validate
+        ok, reason = validate.validate(
+            self.conn,
+            "ts_decay_linear(close, 5, dense=false)"
+        )
+        # 'false' is not in _EXCLUSIONS so may be flagged — only assert 'dense' is not
+        self.assertNotIn("unknown data field: dense", reason)
+
+
+# ---------------------------------------------------------------------------
+# FIX-2: ideator.py must emit winsorize(..., std=N) named param everywhere
+# ---------------------------------------------------------------------------
+
+
+class TestIdeatorWinsorizeNamedParam(unittest.TestCase):
+    """FIX-2: ideator must emit winsorize(..., std=N), never winsorize(..., N)."""
+
+    def setUp(self):
+        import db
+        self.conn = db.init_db(":memory:")
+        # Seed minimal catalog so generate_candidates can run
+        ops = [
+            "winsorize", "rank", "divide", "group_neutralize", "group_zscore",
+            "ts_decay_linear", "ts_delta", "ts_delay", "ts_mean", "ts_std_dev",
+            "ts_zscore", "ts_corr", "reverse", "abs", "trade_when", "greater",
+            "vec_avg", "zscore",
+        ]
+        fields = [
+            "close", "bookvalue_ps", "operating_income", "assets",
+            "actual_eps_value_quarterly", "industry", "subindustry", "sector",
+            "returns", "volume", "vwap", "adv20", "cap", "cashflow_op",
+            "actual_sales_value_annual", "adj_net_income_avg", "debt_lt",
+            "nws12_afterhsz_sl", "mdl177_garpanalystmodel_qgp_vfpriceratio",
+        ]
+        for op in ops:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO operators (name) VALUES (?)", (op,)
+            )
+        for f in fields:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO datafields (id) VALUES (?)", (f,)
+            )
+        self.conn.commit()
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _get_winsorize_exprs(self, archetype):
+        import researcher
+        import ideator
+        thesis = {
+            "archetype": archetype,
+            "source_operators": [
+                "winsorize", "rank", "divide", "group_neutralize", "group_zscore",
+            ],
+            "source_datafields": [
+                "close", "bookvalue_ps", "operating_income", "assets",
+                "actual_eps_value_quarterly", "industry", "subindustry",
+            ],
+        }
+        candidates = ideator.generate_candidates(self.conn, thesis)
+        return [
+            c["expression"] for c in candidates
+            if "winsorize" in c["expression"]
+        ]
+
+    def test_value_garp_winsorize_uses_named_param(self):
+        """All value_garp expressions containing winsorize must use std=."""
+        winsorize_exprs = self._get_winsorize_exprs("value_garp")
+        self.assertTrue(len(winsorize_exprs) > 0,
+            "Expected at least one winsorize expression in value_garp")
+        for expr in winsorize_exprs:
+            self.assertIn("std=", expr,
+                f"winsorize expr missing std=: {expr}")
+            # Ensure old positional form is gone: no bare comma-number after the inner expr
+            import re
+            # Matches winsorize(<something>, <digit>) — the BAD old form
+            bad_pattern = re.compile(r'winsorize\([^)]+\),\s*\d+\)')
+            self.assertIsNone(bad_pattern.search(expr),
+                f"Old positional winsorize form detected: {expr}")
+
+    def test_quality_winsorize_uses_named_param(self):
+        """Quality archetype winsorize wrapper must use std=."""
+        winsorize_exprs = self._get_winsorize_exprs("quality")
+        for expr in winsorize_exprs:
+            self.assertIn("std=", expr,
+                f"winsorize expr missing std=: {expr}")
+
+    def test_winsorize_exprs_pass_validation(self):
+        """All emitted winsorize expressions must pass validate.validate."""
+        import validate
+        for archetype in ("value_garp", "quality"):
+            for expr in self._get_winsorize_exprs(archetype):
+                ok, reason = validate.validate(self.conn, expr)
+                self.assertTrue(ok,
+                    f"Validation failed for [{archetype}] {expr!r}: {reason}")
+
+
+# ---------------------------------------------------------------------------
+# FIX-3: grade.py must surface BRAIN sim ERROR instead of mislabeling as throttle
+# ---------------------------------------------------------------------------
+
+
+class TestGradeSurfacesBrainError(unittest.TestCase):
+    """FIX-3: _simulate_to_alpha must raise with BRAIN's real error message."""
+
+    def _make_fake_sim(self, alpha_id=None, result=None):
+        """Build a minimal fake SimulationResult object."""
+        class FakeSim:
+            pass
+        sim = FakeSim()
+        sim.alpha_id = alpha_id
+        if result is not None:
+            sim._result = result
+        # no _result attr when result is None — simulates missing attribute
+        return sim
+
+    def test_brain_error_raises_with_real_message(self):
+        """When BRAIN returns status=ERROR, RuntimeError must contain the message."""
+        import grade
+        from unittest.mock import MagicMock, patch
+
+        fake_sim = self._make_fake_sim(
+            alpha_id=None,
+            result={"status": "ERROR", "message": "Invalid number of inputs : 2, should be exactly 1 input(s)."}
+        )
+
+        mock_client = MagicMock()
+        mock_client.simulate.return_value = fake_sim
+        fake_sim.wait = MagicMock(return_value=None)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            grade._simulate_to_alpha(mock_client, "winsorize(close, 4)", attempts=3)
+
+        err_msg = str(ctx.exception)
+        self.assertIn("Invalid number of inputs", err_msg,
+            f"Expected BRAIN error message in exception, got: {err_msg}")
+        self.assertNotIn("transient throttle/queue", err_msg,
+            "Must NOT say throttle when BRAIN returned an ERROR status")
+
+    def test_brain_error_does_not_retry(self):
+        """A genuine BRAIN ERROR must raise immediately — no retry wasted."""
+        import grade
+        from unittest.mock import MagicMock
+
+        fake_sim = self._make_fake_sim(
+            alpha_id=None,
+            result={"status": "ERROR", "message": "bad expression"}
+        )
+
+        mock_client = MagicMock()
+        mock_client.simulate.return_value = fake_sim
+        fake_sim.wait = MagicMock(return_value=None)
+
+        with self.assertRaises(RuntimeError):
+            grade._simulate_to_alpha(mock_client, "bad_expr", attempts=3)
+
+        # simulate() should have been called exactly once — no retries
+        self.assertEqual(mock_client.simulate.call_count, 1,
+            "simulate() was called more than once — ERROR should not retry")
+
+    @unittest.mock.patch('time.sleep')
+    def test_throttle_still_retries(self, mock_sleep):
+        """When alpha_id is None and _result has no ERROR status, retries still happen."""
+        import grade
+        from unittest.mock import MagicMock
+
+        # Fake sim: no alpha_id, no _result at all (pure throttle scenario)
+        fake_sim = self._make_fake_sim(alpha_id=None, result=None)
+        mock_client = MagicMock()
+        mock_client.simulate.return_value = fake_sim
+        fake_sim.wait = MagicMock(return_value=None)
+
+        with self.assertRaises(RuntimeError) as ctx:
+            grade._simulate_to_alpha(mock_client, "rank(close)", attempts=2)
+
+        # Should have retried (simulate called twice for attempts=2)
+        self.assertEqual(mock_client.simulate.call_count, 2,
+            "Expected 2 simulate() calls for throttle-retry path")
+        self.assertIn("transient throttle/queue", str(ctx.exception))
 
 
 # ---------------------------------------------------------------------------

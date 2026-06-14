@@ -25,7 +25,7 @@ PnL proxy + real BRAIN correlation confirm), a standalone brute-force generation
 - [x] **Phase 2: Grounded Generation** - Researcher + Ideator agents reading verified catalog and memory to produce grounded FastExpr candidates (completed 2026-06-08)
 - [x] **Phase 3: Smart Iteration** - Editor diagnose+mutate loop, memory-aware dedupe, local PnL pre-filter, Frequent Subtree Avoidance (completed 2026-06-10)
 - [x] **Phase 4: Optimization & Polish** - Knowledge-driven Settings Optimizer, decay monitor, Obsidian prose layer (completed 2026-06-11)
-- [ ] **Phase 5: Delay-0 Feasibility & Plumbing** - Confirm BRAIN runs delay-0 from code; detect silent coercion; thread `--delay` end-to-end
+- [x] **Phase 5: Delay-0 Feasibility & Plumbing** - Confirmed BRAIN runs delay-0 from code (Test A PASS, alpha e7rvXqwz); coercion detection wired; `--delay` threaded end-to-end (completed 2026-06-13)
 - [ ] **Phase 6: Additivity Gate** - Local PnL correlation proxy to rank candidates + real BRAIN correlation confirm; reusable as filter and as score
 - [ ] **Phase 7: Brute-Force Tool (Tool B)** - In-repo template enumeration, local validate, probe-sim, bulk-sim, additivity gate; fully standalone; no AI dependency
 - [ ] **Phase 8: Evolve /hunt + Fold /find-alphas** - Add `--delay`, additivity-gated selection to /hunt; retire /find-alphas as `/hunt --research-only`
@@ -166,7 +166,20 @@ Plans:
   2. `grade.py` (and any downstream grading path) compares the requested delay against the value in BRAIN's returned settings object and raises a visible warning whenever they differ — the recorded DB row always stores BRAIN's actual returned delay, never the requested value
   3. `/hunt --delay 0` and `/bruteforce --delay 0` (once built) pass the delay parameter end-to-end from the CLI to the simulate call without silent override
 
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+**Wave 1**
+
+- [x] 05-02-PLAN.md — probe_delay.py (probe_and_gate + run_probe + DelayCoercedError with structured fields + ProbeResult exposing settings_sent/returned_settings) + harvest run_delay0.py → delay0_candidates.py + retire run_delay0.py
+
+**Wave 2** *(blocked on Wave 1 completion — 05-01 imports probe_delay into hunt.py)*
+
+- [x] 05-01-PLAN.md — `--delay` parameter threading (grade.py, researcher.py, find_alphas.py, hunt.py) + coercion warning at grade.py resolution block + `settings["delay"]`-over-`delay=` precedence + probe-skip when `--max-sims 0` + regression tests
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [x] 05-03-PLAN.md — Empirical verification via single-process verify_delay0.py (one login, then Test A probe sim with proven settings + delay=0; Test B independent-bisection fallback if coerced); 05-VERIFICATION.md outcome record — **Test A PASS: BRAIN returned delay=0 (alpha e7rvXqwz); Test B skipped; no payload fix needed**
 
 ### Phase 6: Additivity Gate
 
@@ -234,7 +247,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 2. Grounded Generation | 4/4 | Complete | 2026-06-08 |
 | 3. Smart Iteration | 6/6 | Complete | 2026-06-10 |
 | 4. Optimization & Polish | 6/6 | Complete | 2026-06-11 |
-| 5. Delay-0 Feasibility & Plumbing | 0/TBD | Not started | - |
+| 5. Delay-0 Feasibility & Plumbing | 2/3 | In Progress|  |
 | 6. Additivity Gate | 0/TBD | Not started | - |
 | 7. Brute-Force Tool (Tool B) | 0/TBD | Not started | - |
 | 8. Evolve /hunt + Fold /find-alphas | 0/TBD | Not started | - |

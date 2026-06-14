@@ -49,8 +49,8 @@ Source of truth: `docs/plans/2026-06-07-alpha-system-design.md`.
 
 ### Delay (delay-0 support)
 
-- [ ] **DLY-01**: User can request delay-0 simulations through the pipeline (`--delay 0`), threaded end-to-end (hunt and brute-force)
-- [ ] **DLY-02**: System verifies BRAIN's *returned* delay matches the request and surfaces any silent coercion (delay-0 run as delay-1) rather than recording the wrong value
+- [x] **DLY-01**: User can request delay-0 simulations through the pipeline (`--delay 0`), threaded end-to-end (hunt and brute-force)
+- [x] **DLY-02**: System verifies BRAIN's *returned* delay matches the request and surfaces any silent coercion (delay-0 run as delay-1) rather than recording the wrong value
 
 ### Brute-force generation (Tool B — standalone, no AI dependency)
 
@@ -105,8 +105,8 @@ Deferred beyond this milestone.
 | OPT-01 | Phase 4 | Pending |
 | OPT-02 | Phase 4 | Pending |
 | OPT-03 | Phase 4 | Pending |
-| DLY-01 | Phase 5 | Pending |
-| DLY-02 | Phase 5 | Pending |
+| DLY-01 | Phase 5 | Complete |
+| DLY-02 | Phase 5 | Complete |
 | ADD-01 | Phase 6 | Pending |
 | ADD-02 | Phase 6 | Pending |
 | ADD-03 | Phase 6 | Pending |

@@ -362,6 +362,7 @@ def find_alphas(
     db_path: str = "alpha_kb.db",
     archetype: Optional[str] = None,
     prose: Optional[dict] = None,
+    delay: int = 1,
 ) -> dict:
     """Run the full Researcher -> Ideator -> note -> runs pipeline.
 
@@ -375,6 +376,8 @@ def find_alphas(
                  'rationale_prose' — economic rationale (D-03)
                Supplied by the /find-alphas command's Claude agent step.
                If None, render_note inserts clearly-marked placeholders.
+    delay:     Simulation delay in days (0 or 1; default 1). Forwarded to
+               researcher.build_thesis so the correct datafields slice is queried.
 
     Returns
     -------
@@ -398,7 +401,8 @@ def find_alphas(
 
         # 2. Build grounded thesis (deterministic archetype selection + catalog reads)
         # Pass avoid_motifs so researcher injects the avoid-list into the LLM prompt.
-        thesis = researcher.build_thesis(conn, archetype=archetype, avoid_motifs=avoid_motifs)
+        # Pass delay so read_catalog queries the correct delay slice from datafields.
+        thesis = researcher.build_thesis(conn, archetype=archetype, avoid_motifs=avoid_motifs, delay=delay)
 
         # 3. Generate candidates (validate gate + dedup via expr_exists)
         candidates = ideator.generate_candidates(conn, thesis)

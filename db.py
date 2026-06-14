@@ -203,13 +203,35 @@ def upsert_datafields(conn: sqlite3.Connection, rows: list) -> None:
     conn.commit()
 
 
-def expr_exists(conn: sqlite3.Connection, expression: str) -> Optional[str]:
+def expr_exists(
+    conn: sqlite3.Connection,
+    expression: str,
+    delay: Optional[int] = None,
+) -> Optional[str]:
     """Return alpha_id if expression already in alphas table, else None.
 
     Uses idx_alphas_expr index for fast lookup.
+
+    Parameters
+    ----------
+    conn:       Open sqlite3.Connection.
+    expression: Alpha expression string to look up.
+    delay:      When provided (int), also matches on alphas.delay — which
+                holds BRAIN's ACTUAL returned delay (set by the 2026-06-11
+                recording fix).  A delay=0 query will NOT match a delay=1
+                row for the same expression.  When None (default), the
+                original expression-only query is used, preserving full
+                backward compatibility for all existing callers (editor.py,
+                grade.py, find_alphas.py, hunt._is_passable).
     """
-    row = conn.execute(
-        "SELECT alpha_id FROM alphas WHERE expression=? LIMIT 1",
-        (expression,),
-    ).fetchone()
+    if delay is None:
+        row = conn.execute(
+            "SELECT alpha_id FROM alphas WHERE expression=? LIMIT 1",
+            (expression,),
+        ).fetchone()
+    else:
+        row = conn.execute(
+            "SELECT alpha_id FROM alphas WHERE expression=? AND delay=? LIMIT 1",
+            (expression, delay),
+        ).fetchone()
     return row[0] if row else None

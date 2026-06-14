@@ -13,6 +13,7 @@ Public API:
 
 import json
 import sqlite3
+import sys
 import time
 import requests
 from concurrent.futures import ThreadPoolExecutor
@@ -79,12 +80,23 @@ def _simulate_to_alpha(client, expression: str, settings: dict = None, attempts:
             sim.wait(verbose=False)
             if getattr(sim, "alpha_id", None):
                 return sim, sim.get_alpha()
+            # Inspect _result to distinguish a genuine BRAIN expression ERROR from a
+            # transient throttle/queue situation (where _result is absent or has no status).
+            _result = getattr(sim, "_result", None)
+            if isinstance(_result, dict) and _result.get("status") == "ERROR":
+                _msg = _result.get("message", "unknown error")
+                raise RuntimeError(
+                    f"BRAIN sim ERROR (expression rejected): {_msg}"
+                )
             last_err = "wait() returned no alpha_id (transient throttle/queue)"
         except requests.exceptions.HTTPError as e:
             if getattr(getattr(e, "response", None), "status_code", None) == 401:
                 raise  # auth expired — abort the whole run, never re-auth
             last_err = str(e)
         except RuntimeError as e:
+            # Re-raise immediately if it is a BRAIN expression ERROR — retrying is wasteful.
+            if "BRAIN sim ERROR" in str(e):
+                raise
             last_err = str(e)
         if attempt < attempts:
             time.sleep(5 * attempt)  # linear backoff: 5s, 10s
@@ -100,6 +112,7 @@ def grade_one(
     run_id: str,
     parent_alpha_id: Optional[str] = None,
     settings: Optional[dict] = None,
+    delay: int = 1,
 ) -> dict:
     """Grade a single expression: validate → simulate → IS checks → (if survivor) POST /check → persist.
 
@@ -111,11 +124,35 @@ def grade_one(
         Hook A (proxy_gate) will run before simulation to skip wasteful sims.
         The parent lineage is persisted in the alpha row.
 
+    delay: simulation delay in days (0 or 1; default 1). When settings is None,
+    a copy of _BASE_SETTINGS with "delay" overridden to this value is built.
+
     settings: optional dict to override _BASE_SETTINGS for this simulation.
-    When None, falls back to _BASE_SETTINGS (backward-compatible).
+    When None, falls back to _BASE_SETTINGS with the delay= argument applied.
+    When not None, settings["delay"] takes precedence over the delay= argument.
+    If both are supplied and differ, a warning is emitted to stderr and settings
+    is used as-is (the delay= argument is ignored — backward-compat for callers
+    that pass full settings dicts).
+
+    COERCION WARNING (D-03): when BRAIN returns a delay different from what was
+    requested, a loud stderr warning is printed and the alpha is NOT persisted to
+    the DB (warn + discard). This prevents mislabeled rows.
 
     401 from any API call propagates immediately and stops the run.
     """
+    # Precedence: when settings is not None, settings["delay"] wins.
+    # Emit a warning when both are explicitly supplied and differ.
+    if settings is not None:
+        settings_delay = settings.get("delay")
+        if settings_delay is not None and delay != 1 and settings_delay != delay:
+            print(
+                f"[grade] WARNING: delay={delay} argument ignored because "
+                f"settings['delay']={settings_delay} was also supplied",
+                file=sys.stderr,
+            )
+        active_settings = settings
+    else:
+        active_settings = {**_BASE_SETTINGS, "delay": delay}
 
     # Step 0 — Dedupe check
     # If an existing row is a 'queued' stub (pre-inserted by editor.diagnose_and_mutate),
@@ -153,7 +190,7 @@ def grade_one(
     # CRITICAL: call simulate(expression) with expression as the ONLY positional arg.
     # NEVER pass regular= keyword — the SDK silently drops expression if you do.
     print(f"[grade] simulating: {expression[:50]}")
-    sim, alpha = _simulate_to_alpha(client, expression, settings=settings)
+    sim, alpha = _simulate_to_alpha(client, expression, settings=active_settings)
 
     # Extract alpha_id — try sim attribute first, then alpha dict.
     alpha_id: Optional[str] = getattr(sim, "alpha_id", None)
@@ -184,13 +221,24 @@ def grade_one(
     )
 
     # Step 5 — Build settings_json (record BRAIN's returned settings; fall back to
-    # requested settings if BRAIN response has no settings dict)
-    active_settings = settings if settings is not None else _BASE_SETTINGS
+    # requested settings if BRAIN response has no settings dict).
+    # D-03 COERCION GUARD: normalize defensively before comparing delays.
+    # int(None) would raise TypeError — guard: use requested delay when BRAIN omits the key.
     brain_settings = alpha.get("settings") or {}
+    requested_delay_int = int(active_settings.get("delay", 1))
+    resolved_delay_raw = brain_settings.get("delay")
+    resolved_delay_int = int(resolved_delay_raw) if resolved_delay_raw is not None else requested_delay_int
+    if requested_delay_int != resolved_delay_int:
+        print(
+            f"[grade] COERCION WARNING: alpha_id={alpha_id} requested delay={requested_delay_int} "
+            f"but BRAIN returned delay={resolved_delay_int} — discarding (not persisted)",
+            file=sys.stderr,
+        )
+        return {"expression": expression, "status": "coerced", "alpha_id": alpha_id}
     # For each persisted field: BRAIN's returned value wins; active_settings is fallback.
     resolved_region        = brain_settings.get("region",         active_settings.get("region"))
     resolved_universe      = brain_settings.get("universe",       active_settings.get("universe"))
-    resolved_delay         = brain_settings.get("delay",          active_settings.get("delay"))
+    resolved_delay         = resolved_delay_int
     resolved_decay         = brain_settings.get("decay",          active_settings.get("decay"))
     resolved_neutralization= brain_settings.get("neutralization", active_settings.get("neutralization"))
     resolved_truncation    = brain_settings.get("truncation",     active_settings.get("truncation"))
@@ -352,6 +400,7 @@ def grade_many(
     db_path: Optional[str] = None,
     parent_map: Optional[dict] = None,
     settings_map: Optional[dict] = None,
+    delay: int = 1,
 ) -> list:
     """Grade a list of expressions. max_workers ≤ MAX_CONCURRENT_SIMS (BRAIN cap).
 
@@ -395,7 +444,7 @@ def grade_many(
             expr_settings = settings_map.get(expr) if settings_map else None
             try:
                 result = grade_one(client, conn, expr, run_id, parent_alpha_id=pid,
-                                   settings=expr_settings)
+                                   settings=expr_settings, delay=delay)
                 results.append(result)
             except requests.exceptions.HTTPError as e:
                 if getattr(getattr(e, "response", None), "status_code", None) == 401:
@@ -415,7 +464,7 @@ def grade_many(
             worker_conn = db.init_db(path)
             try:
                 return grade_one(client, worker_conn, expr, run_id, parent_alpha_id=pid,
-                                 settings=expr_settings)
+                                 settings=expr_settings, delay=delay)
             except requests.exceptions.HTTPError as e:
                 # 401 = auth expired: abort the entire run (never re-auth in-loop).
                 if getattr(getattr(e, "response", None), "status_code", None) == 401:

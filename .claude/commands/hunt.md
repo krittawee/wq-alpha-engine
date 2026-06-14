@@ -26,6 +26,7 @@ never re-auth in-loop (CLAUDE.md lockout constraint).**
        db_path="alpha_kb.db",    # override with --db if needed
        max_depth=2,               # override with --max-depth
        max_sims=30,               # override with --max-sims
+       delay=1,                   # override with --delay (use 0 for delay-0 alphas)
    )
    ```
 
@@ -75,7 +76,7 @@ The full budget is consumed regardless to maximise diversity exploration.
 ## Flags (CLI usage)
 
 ```bash
-python hunt.py [--db alpha_kb.db] [--max-depth 2] [--max-sims 30]
+python hunt.py [--db alpha_kb.db] [--max-depth 2] [--max-sims 30] [--delay 1]
 ```
 
 | Flag | Default | Description |
@@ -83,6 +84,9 @@ python hunt.py [--db alpha_kb.db] [--max-depth 2] [--max-sims 30]
 | `--db` | `alpha_kb.db` | Path to alpha knowledge-base SQLite file |
 | `--max-depth` | `2` | Max editor→grade generations after Gen 0 |
 | `--max-sims` | `30` | Hard simulation ceiling across all generations |
+| `--delay` | `1` | Simulation delay. Use `--delay 0` for delay-0 alphas (explicit opt-in; default is delay-1). Fires a one-shot probe before the hunt loop when delay != 1 and max-sims > 0. |
+
+Note: delay-0 requires `--delay 0`; omitting `--delay` defaults to delay-1. A probe sim fires first to confirm BRAIN supports delay-0 on this session (fails fast if coerced). No probe fires when `--max-sims 0` is used (dry run).
 
 ---
 
@@ -106,7 +110,7 @@ concurrent simulation slot cap. Never raise this value.
 
 ## Module references
 
-- `hunt.py` — `hunt(client, db_path, max_depth, max_sims)` — full orchestrator
+- `hunt.py` — `hunt(client, db_path, max_depth, max_sims, delay=1)` — full orchestrator
 - `wq_login.py` — `login()` — single-shot biometric auth
 - `grade.py` — `grade_many(client, conn, expressions, run_id, max_workers=3, db_path=db_path)`
 - `editor.py` — `classify_from_checks(alpha_id, conn)`, `diagnose_and_mutate(alpha_id, conn, avoid_motifs=...)`

@@ -32,6 +32,7 @@ import editor
 import fsa
 import grade
 import ideator
+import probe_delay
 import researcher
 import selfcorr
 from wq_login import login
@@ -113,6 +114,7 @@ def hunt(
     db_path: str = "alpha_kb.db",
     max_depth: int = 2,
     max_sims: int = 30,
+    delay: int = 1,
 ) -> dict:
     """Autonomous alpha discovery loop (D-16/D-17/D-20).
 
@@ -128,6 +130,11 @@ def hunt(
         db_path: Path to alpha_kb.db.
         max_depth: Maximum number of editor→grade generations after Gen 0.
         max_sims: Hard sim ceiling across all generations (D-17).
+        delay: Simulation delay in days (0 or 1; default 1). Use --delay 0 for
+            delay-0 alphas (explicit opt-in). When delay != 1 AND max_sims > 0,
+            probe_delay.probe_and_gate is called BEFORE the main simulation loop
+            as the D-04 fail-fast feasibility guard. DelayCoercedError propagates
+            to the caller unchanged — never swallowed here.
 
     Returns:
         dict with keys:
@@ -164,6 +171,15 @@ def hunt(
         print(f"[hunt] run_id={run_id} — backfilling active PnL cache...")
         selfcorr.backfill_active_pnl(client, conn, db_path)
 
+        # D-04 probe gate: fire ONE probe sim before the main loop when delay != 1
+        # AND at least one simulation will actually be run (max_sims > 0).
+        # When max_sims == 0 (dry-run / argparse smoke test), skip entirely — no sim slot burned.
+        # DelayCoercedError propagates to the caller unchanged (never swallowed here).
+        if delay != 1 and max_sims > 0:
+            print(f"[hunt] delay={delay} — running probe_and_gate before main loop...")
+            probe_delay.probe_and_gate(client, conn, requested_delay=delay)
+            print(f"[hunt] probe passed — BRAIN confirmed delay={delay}")
+
         # Snapshot structural diversity BEFORE (criterion 4 baseline)
         diversity_before = fsa.diversity_metric(conn)
 
@@ -172,7 +188,7 @@ def hunt(
 
         # Gen 0: Researcher → Ideator → FSA filter → grade
         print(f"[hunt] Gen 0 — researching thesis...")
-        thesis = researcher.build_thesis(conn, avoid_motifs=avoid_motifs)
+        thesis = researcher.build_thesis(conn, avoid_motifs=avoid_motifs, delay=delay)
 
         # WR-04: update runs row with the actual thesis archetype
         thesis_summary = thesis.get("archetype", "")
@@ -183,7 +199,7 @@ def hunt(
         conn.commit()
 
         print(f"[hunt] Gen 0 — generating candidates (archetype={thesis.get('archetype','?')})...")
-        candidates = ideator.generate_candidates(conn, thesis)
+        candidates = ideator.generate_candidates(conn, thesis, delay=delay)
 
         # FSA filter — convert to dicts for filter API (mirrors find_alphas.py lines 409-411)
         cand_dicts = [{"expression": c.get("expression", ""), **c} for c in candidates]
@@ -200,6 +216,7 @@ def hunt(
         results = grade.grade_many(
             client, conn, queue, run_id,
             max_workers=3, db_path=db_path,
+            delay=delay,
         )
         # WR-09: count only actual simulations — skip duplicate/invalid/error results
         # (those never consumed a BRAIN sim slot)
@@ -303,6 +320,7 @@ def hunt(
                 client, conn, queue_next, run_id,
                 max_workers=3, db_path=db_path,
                 parent_map=parent_map,
+                delay=delay,
             )
             # WR-09: count only actual simulations (not duplicate/invalid/error skips)
             sims_used += sum(
@@ -397,6 +415,12 @@ if __name__ == "__main__":
         default=30,
         help="Hard simulation ceiling across all generations (default: 30)",
     )
+    parser.add_argument(
+        "--delay",
+        type=int,
+        default=1,
+        help="Simulation delay in days (0 or 1; default: 1). Use --delay 0 for delay-0 alphas.",
+    )
     args = parser.parse_args()
 
     # Single-shot auth — called ONCE before the loop (CLAUDE.md constraint).
@@ -411,6 +435,7 @@ if __name__ == "__main__":
             db_path=args.db,
             max_depth=args.max_depth,
             max_sims=args.max_sims,
+            delay=args.delay,
         )
     except editor.EditorAuthError as e:
         # WR-08: Claude CLI auth failure — NOT a BRAIN session expiry.

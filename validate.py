@@ -64,12 +64,22 @@ def validate(conn: sqlite3.Connection, expression: str) -> tuple[bool, str]:
         re.findall(r'^([A-Za-z_][A-Za-z0-9_]*)\s*=', expression, re.MULTILINE)
     )
 
+    # Named-argument keys (e.g. std=4, dense=false) are not data-field references.
+    # Pattern: word token immediately followed by = but NOT ==.
+    named_arg_keys: set[str] = set(
+        re.findall(r'\b([A-Za-z_]\w*)\s*=(?!=)', expression)
+    )
+
     # All word tokens that are NOT function-call tokens, NOT excluded keywords,
-    # and NOT user-defined variable names are treated as data-field references.
+    # NOT user-defined variable names, and NOT named-argument keys are treated as
+    # data-field references.
     all_tokens: list[str] = re.findall(r'[A-Za-z_][A-Za-z0-9_]*', expression)
     bare_field_tokens: set[str] = {
         t for t in all_tokens
-        if t not in operator_tokens and t not in _EXCLUSIONS and t not in assigned_vars
+        if t not in operator_tokens
+        and t not in _EXCLUSIONS
+        and t not in assigned_vars
+        and t not in named_arg_keys
     }
 
     # Step 6 — Validate each bare field token against the datafields table

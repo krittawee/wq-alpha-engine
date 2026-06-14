@@ -80,13 +80,14 @@ _ARCHETYPE_SEEDS = {
 # ---------------------------------------------------------------------------
 
 
-def read_catalog(conn: sqlite3.Connection) -> tuple[list[dict], list[dict]]:
-    """Read operators and USA/TOP3000/delay=1 datafields from the live catalog.
+def read_catalog(conn: sqlite3.Connection, delay: int = 1) -> tuple[list[dict], list[dict]]:
+    """Read operators and USA/TOP3000/delay=<delay> datafields from the live catalog.
 
     Returns:
         operators: list of dicts {name, category, definition} — all 67 rows.
-        datafields: list of dicts {id, description, dataset, type} — USA/TOP3000/delay=1 slice.
+        datafields: list of dicts {id, description, dataset, type} — USA/TOP3000/delay=<delay> slice.
 
+    delay: filter the datafields query to this delay value (default 1; pass 0 for delay-0 fields).
     No hardcoded catalog — every token is read from the BRAIN-synced tables.
     """
     # Verbatim SELECTs from 02-GROUNDING.md §Phase 1 integration contract
@@ -100,7 +101,8 @@ def read_catalog(conn: sqlite3.Connection) -> tuple[list[dict], list[dict]]:
 
     field_rows = conn.execute(
         "SELECT id, description, dataset, type FROM datafields"
-        " WHERE region='USA' AND universe='TOP3000' AND delay=1"
+        " WHERE region='USA' AND universe='TOP3000' AND delay=?",
+        (delay,),
     ).fetchall()
     datafields = [
         {"id": row[0], "description": row[1], "dataset": row[2], "type": row[3]}
@@ -253,6 +255,7 @@ def build_thesis(
     conn: sqlite3.Connection,
     archetype: Optional[str] = None,
     avoid_motifs: Optional[list] = None,
+    delay: int = 1,
 ) -> dict:
     """Assemble a structured thesis dict from the live catalog + past insights.
 
@@ -266,6 +269,10 @@ def build_thesis(
         cited_insights so the downstream LLM prose layer sees the avoid-list.
         If None or empty, behavior is unchanged.
 
+    delay: simulation delay in days (default 1). Passed to read_catalog to query
+        the correct delay slice from the datafields table, and emitted in the
+        returned dict so downstream modules (ideator, grade) use the right value.
+
     Returns a dict with keys:
         archetype: str — one of the 8 taxonomy labels
         source_operators: list[str] — subset of operators.name in live catalog
@@ -275,12 +282,12 @@ def build_thesis(
         avoid_motifs: list[str] — motifs to avoid (passed through for downstream use)
         region: str — 'USA'
         universe: str — 'TOP3000'
-        delay: int — 1
+        delay: int — simulation delay (matches the delay= argument)
 
     No LLM prose is generated here. No grade/simulate/BRAIN API calls are made.
     """
-    # Step 1: Read live catalog
-    operators, datafields = read_catalog(conn)
+    # Step 1: Read live catalog (query the correct delay slice)
+    operators, datafields = read_catalog(conn, delay=delay)
     live_op_names = {op["name"] for op in operators}
     live_field_ids = {f["id"] for f in datafields}
 
@@ -329,5 +336,5 @@ def build_thesis(
         "avoid_motifs": avoid_motifs or [],
         "region": "USA",
         "universe": "TOP3000",
-        "delay": 1,
+        "delay": delay,
     }
