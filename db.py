@@ -20,6 +20,7 @@ _DDL = [
   sharpe REAL, fitness REAL, turnover REAL, returns REAL, drawdown REAL, margin REAL,
   long_count INTEGER, short_count INTEGER,
   self_corr REAL, prod_corr REAL, corr_checked_at TEXT, pnl_path TEXT,
+  diagnosis TEXT,
   status TEXT, run_id TEXT, created_at TEXT
 )""",
     """CREATE TABLE IF NOT EXISTS checks (
@@ -48,7 +49,7 @@ _ALPHA_COLS = [
     "region", "universe", "delay", "decay", "neutralization", "truncation",
     "settings_json", "sharpe", "fitness", "turnover", "returns", "drawdown",
     "margin", "long_count", "short_count", "self_corr", "prod_corr",
-    "corr_checked_at", "pnl_path", "status", "run_id", "created_at",
+    "corr_checked_at", "pnl_path", "diagnosis", "status", "run_id", "created_at",
 ]
 
 
@@ -60,9 +61,21 @@ def init_db(path: str = DB_PATH) -> sqlite3.Connection:
     """
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA journal_mode=WAL")
+    # Concurrent workers (grade_many max_workers>1) each open their own
+    # connection; busy_timeout makes a writer wait for the lock instead of
+    # immediately raising "database is locked".
+    conn.execute("PRAGMA busy_timeout=30000")
     for stmt in _DDL:
         conn.execute(stmt)
     conn.commit()
+    # Phase 3 idempotent migration: add diagnosis TEXT column to existing databases.
+    # SQLite raises OperationalError("duplicate column name") for ADD COLUMN if it
+    # already exists — catch and ignore to make this re-entrant across schema versions.
+    try:
+        conn.execute("ALTER TABLE alphas ADD COLUMN diagnosis TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists — idempotent
     return conn
 
 

@@ -58,12 +58,18 @@ def validate(conn: sqlite3.Connection, expression: str) -> tuple[bool, str]:
             return False, f"unknown operator: {token}"
 
     # Step 5 — Data-field token detection
-    # All word tokens that are NOT function-call tokens and NOT excluded keywords
-    # and NOT pure numeric strings are treated as data-field references.
+    # Extract variable names from assignment statements (e.g. "vol = rank(...);\n")
+    # so that user-defined variable names are not mistaken for datafield references.
+    assigned_vars: set[str] = set(
+        re.findall(r'^([A-Za-z_][A-Za-z0-9_]*)\s*=', expression, re.MULTILINE)
+    )
+
+    # All word tokens that are NOT function-call tokens, NOT excluded keywords,
+    # and NOT user-defined variable names are treated as data-field references.
     all_tokens: list[str] = re.findall(r'[A-Za-z_][A-Za-z0-9_]*', expression)
     bare_field_tokens: set[str] = {
         t for t in all_tokens
-        if t not in operator_tokens and t not in _EXCLUSIONS
+        if t not in operator_tokens and t not in _EXCLUSIONS and t not in assigned_vars
     }
 
     # Step 6 — Validate each bare field token against the datafields table

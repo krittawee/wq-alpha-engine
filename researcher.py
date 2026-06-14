@@ -123,27 +123,49 @@ def gather_insights(conn: sqlite3.Connection) -> list[dict]:
     """
     insights = []
 
-    # Insight 1: 59-alpha clean pool count (criterion: UNSUBMITTED, sharpe>=1.25,
-    # fitness>=1.0, turnover<=0.4). Cited from alphas table only.
+    # CR-06: Read submittability thresholds from the checks table at runtime.
+    # CLAUDE.md mandates thresholds must come from BRAIN's is.checks / DB, never hardcoded.
+    # Fall back to safe defaults if no resolved rows exist yet (fresh DB / cold start).
+    sharpe_lim_row = conn.execute(
+        "SELECT limit_val FROM checks WHERE name='LOW_SHARPE' AND limit_val IS NOT NULL"
+        " ORDER BY checked_at DESC LIMIT 1"
+    ).fetchone()
+    fitness_lim_row = conn.execute(
+        "SELECT limit_val FROM checks WHERE name='LOW_FITNESS' AND limit_val IS NOT NULL"
+        " ORDER BY checked_at DESC LIMIT 1"
+    ).fetchone()
+    turnover_lim_row = conn.execute(
+        "SELECT limit_val FROM checks WHERE name='HIGH_TURNOVER' AND limit_val IS NOT NULL"
+        " ORDER BY checked_at DESC LIMIT 1"
+    ).fetchone()
+
+    sharpe_lim = sharpe_lim_row[0] if sharpe_lim_row else 1.25   # BRAIN default fallback
+    fitness_lim = fitness_lim_row[0] if fitness_lim_row else 1.0  # BRAIN default fallback
+    turnover_lim = turnover_lim_row[0] if turnover_lim_row else 0.4  # BRAIN default fallback
+
+    # Insight 1: Clean pool count using runtime thresholds from DB.
     clean_pool_row = conn.execute(
         "SELECT count(*) FROM alphas"
-        " WHERE status='UNSUBMITTED' AND sharpe>=1.25 AND fitness>=1.0 AND turnover<=0.4"
+        " WHERE status='UNSUBMITTED' AND sharpe>=? AND fitness>=? AND turnover<=?",
+        (sharpe_lim, fitness_lim, turnover_lim),
     ).fetchone()
     clean_pool_count = clean_pool_row[0] if clean_pool_row else 0
 
     # Pull a sample of alpha_ids from the clean pool for provenance
     clean_pool_ids = conn.execute(
         "SELECT alpha_id FROM alphas"
-        " WHERE status='UNSUBMITTED' AND sharpe>=1.25 AND fitness>=1.0 AND turnover<=0.4"
-        " LIMIT 5"
+        " WHERE status='UNSUBMITTED' AND sharpe>=? AND fitness>=? AND turnover<=?"
+        " LIMIT 5",
+        (sharpe_lim, fitness_lim, turnover_lim),
     ).fetchall()
     clean_pool_alpha_ids = [row[0] for row in clean_pool_ids]
 
     insights.append({
         "text": (
-            f"Clean pool: {clean_pool_count} UNSUBMITTED alphas have sharpe>=1.25, "
-            f"fitness>=1.0, and turnover<=0.4. Thesis target: diversify around or extend "
-            f"this existing pool rather than regenerating from scratch."
+            f"Clean pool: {clean_pool_count} UNSUBMITTED alphas have sharpe>={sharpe_lim}, "
+            f"fitness>={fitness_lim}, and turnover<={turnover_lim} (thresholds read from DB). "
+            f"Thesis target: diversify around or extend this existing pool rather than "
+            f"regenerating from scratch."
         ),
         "cited_alpha_ids": clean_pool_alpha_ids,
     })
@@ -227,7 +249,11 @@ def select_archetype(conn: sqlite3.Connection) -> str:
     return ARCHETYPES[run_count % len(ARCHETYPES)]
 
 
-def build_thesis(conn: sqlite3.Connection, archetype: Optional[str] = None) -> dict:
+def build_thesis(
+    conn: sqlite3.Connection,
+    archetype: Optional[str] = None,
+    avoid_motifs: Optional[list] = None,
+) -> dict:
     """Assemble a structured thesis dict from the live catalog + past insights.
 
     Calls read_catalog, gather_insights, and (if archetype is None) select_archetype.
@@ -235,12 +261,18 @@ def build_thesis(conn: sqlite3.Connection, archetype: Optional[str] = None) -> d
     that every emitted token is present in the synced catalog (machine-checkable
     for criterion 1 of Phase 2 success criteria).
 
+    avoid_motifs: optional list of structural motif strings to steer the LLM away
+        from overused expression patterns (D-15). When non-empty, appended to
+        cited_insights so the downstream LLM prose layer sees the avoid-list.
+        If None or empty, behavior is unchanged.
+
     Returns a dict with keys:
         archetype: str — one of the 8 taxonomy labels
         source_operators: list[str] — subset of operators.name in live catalog
         source_datafields: list[str] — subset of datafields.id in synced slice
         cited_alpha_ids: list[str] — alpha_ids from insight citations
         cited_insights: list[str] — human-readable insight strings
+        avoid_motifs: list[str] — motifs to avoid (passed through for downstream use)
         region: str — 'USA'
         universe: str — 'TOP3000'
         delay: int — 1
@@ -276,12 +308,25 @@ def build_thesis(conn: sqlite3.Connection, archetype: Optional[str] = None) -> d
 
     cited_insights = [ins["text"] for ins in insights]
 
+    # Phase 3 D-15: inject avoid_motifs into cited_insights for upstream LLM steer.
+    # When the LLM prose layer reads cited_insights, it sees the structural motifs to
+    # avoid (overused patterns in past PASS alphas), steering generation diversity.
+    # No change to behavior when avoid_motifs is empty or None.
+    if avoid_motifs:
+        motifs_str = ", ".join(avoid_motifs)
+        avoid_insight = (
+            f"Structural motifs to AVOID (overused in past PASS alphas): {motifs_str}. "
+            f"Generate expressions that do NOT share these structural patterns."
+        )
+        cited_insights = cited_insights + [avoid_insight]
+
     return {
         "archetype": archetype,
         "source_operators": source_operators,
         "source_datafields": source_datafields,
         "cited_alpha_ids": cited_alpha_ids,
         "cited_insights": cited_insights,
+        "avoid_motifs": avoid_motifs or [],
         "region": "USA",
         "universe": "TOP3000",
         "delay": 1,

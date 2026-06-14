@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Optional
 
 import db
+import fsa
 import ideator
 import researcher
 
@@ -391,11 +392,26 @@ def find_alphas(
     conn = db.init_db(db_path)
 
     try:
+        # [Phase 3 FSA hook — D-14, D-15, D-19]
+        # Mine frequent motifs BEFORE build_thesis so avoid_motifs is ready for LLM steer.
+        avoid_motifs = fsa.mine_frequent_motifs(conn)
+
         # 2. Build grounded thesis (deterministic archetype selection + catalog reads)
-        thesis = researcher.build_thesis(conn, archetype=archetype)
+        # Pass avoid_motifs so researcher injects the avoid-list into the LLM prompt.
+        thesis = researcher.build_thesis(conn, archetype=archetype, avoid_motifs=avoid_motifs)
 
         # 3. Generate candidates (validate gate + dedup via expr_exists)
         candidates = ideator.generate_candidates(conn, thesis)
+
+        # [Phase 3 FSA hook — D-14, D-19]
+        # Filter candidates through the FSA avoid-list before queueable check.
+        # Converts to dicts with "expression" key for filter API, then rebuilds.
+        cand_dicts = [{"expression": c.get("expression", ""), **c} for c in candidates]
+        filtered_dicts = fsa.filter_candidates(cand_dicts, avoid_motifs)
+        candidates = filtered_dicts
+        if avoid_motifs:
+            dropped = len(cand_dicts) - len(candidates)
+            print(f"[find_alphas] FSA filtered: {dropped} candidates dropped ({len(avoid_motifs)} avoid motifs)")
 
         # 4. Generate run_id (uuid4 trimmed to 8 chars — matches cli.py convention)
         run_id = str(uuid.uuid4())[:8]

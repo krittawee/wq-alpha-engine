@@ -94,7 +94,8 @@ def main() -> None:
     results = []
     try:
         results = grade.grade_many(
-            client, conn, expressions, run_id, max_workers=args.workers
+            client, conn, expressions, run_id,
+            max_workers=args.workers, db_path=args.db,
         )
     except requests.exceptions.HTTPError as e:
         if "401" in str(e) or (
