@@ -19,7 +19,7 @@ settings tuning, decay monitoring, and the Obsidian prose layer.
 - [x] **Phase 1: MVP Grading Engine** - Sync catalog + alphas to SQLite, local validator, two-phase BRAIN grading, persist — no LLM in loop
 - [x] **Phase 2: Grounded Generation** - Researcher + Ideator agents reading verified catalog and memory to produce grounded FastExpr candidates (completed 2026-06-08)
 - [x] **Phase 3: Smart Iteration** - Editor diagnose+mutate loop, memory-aware dedupe, local PnL pre-filter, Frequent Subtree Avoidance (completed 2026-06-10)
-- [ ] **Phase 4: Optimization & Polish** - Knowledge-driven Settings Optimizer, decay monitor, Obsidian prose layer
+- [x] **Phase 4: Optimization & Polish** - Knowledge-driven Settings Optimizer, decay monitor, Obsidian prose layer (completed 2026-06-11)
 
 ## Phase Details
 
@@ -127,7 +127,23 @@ Plans:
   2. The decay monitor queries the time-stamped `checks` table and surfaces any alpha whose key metrics have degraded across successive check runs
   3. An Obsidian note exists for every thesis run, every archetype, and every notable failure family, each referencing its associated `alpha_id`(s) from SQLite
 
-**Plans**: TBD
+**Plans**: 6 plans
+
+Plans:
+**Wave 1** *(independent — build in parallel)*
+
+- [x] 04-01-PLAN.md — grade.py + db.py prerequisite changes: settings param in grade_one/grade_many/_simulate_to_alpha + checks_history DDL + append_checks_history + note_path migration
+- [x] 04-02-PLAN.md — test_phase4.py scaffold: 12 unit tests covering all 3 OPT requirements (zero BRAIN API calls)
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [x] 04-03-PLAN.md — optimizer.py + optimize.py: ARCHETYPE_HEURISTICS + build_variants + run_optimize + /optimize CLI
+- [x] 04-04-PLAN.md — decay_monitor.py + decay.py: detect_decay + run_decay + /decay CLI
+- [x] 04-05-PLAN.md — obsidian.py: regen_archetype_notes + regen_failure_notes + write_decay_note + regen_all + note_path DB update
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [x] 04-06-PLAN.md — command files (.claude/commands/optimize.md, decay.md) + full test suite run + human-verify checkpoint (all 3 ROADMAP criteria)
 
 ## Progress
 
@@ -139,4 +155,4 @@ Phases execute in numeric order: 1 → 2 → 3 → 4
 | 1. MVP Grading Engine | 5/5 | Complete | 2026-06-07 |
 | 2. Grounded Generation | 4/4 | Complete   | 2026-06-08 |
 | 3. Smart Iteration | 6/6 | Complete   | 2026-06-10 |
-| 4. Optimization & Polish | 0/TBD | Not started | - |
+| 4. Optimization & Polish | 6/6 | Complete   | 2026-06-11 |

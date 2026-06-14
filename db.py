@@ -41,6 +41,17 @@ _DDL = [
 )""",
     "CREATE INDEX IF NOT EXISTS idx_alphas_expr ON alphas(expression)",
     "CREATE INDEX IF NOT EXISTS idx_alphas_arch ON alphas(archetype, status)",
+    """CREATE TABLE IF NOT EXISTS checks_history (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    alpha_id    TEXT    NOT NULL,
+    name        TEXT    NOT NULL,
+    result      TEXT,
+    value       REAL,
+    limit_val   REAL,
+    checked_at  TEXT    NOT NULL,
+    run_tag     TEXT
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_checks_history_alpha ON checks_history(alpha_id, name, checked_at)",
 ]
 
 # Column order for alphas INSERT OR REPLACE (matches schema definition order)
@@ -49,7 +60,8 @@ _ALPHA_COLS = [
     "region", "universe", "delay", "decay", "neutralization", "truncation",
     "settings_json", "sharpe", "fitness", "turnover", "returns", "drawdown",
     "margin", "long_count", "short_count", "self_corr", "prod_corr",
-    "corr_checked_at", "pnl_path", "diagnosis", "status", "run_id", "created_at",
+    "corr_checked_at", "pnl_path", "diagnosis", "note_path",
+    "status", "run_id", "created_at",
 ]
 
 
@@ -73,6 +85,12 @@ def init_db(path: str = DB_PATH) -> sqlite3.Connection:
     # already exists — catch and ignore to make this re-entrant across schema versions.
     try:
         conn.execute("ALTER TABLE alphas ADD COLUMN diagnosis TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists — idempotent
+    # Phase 4 idempotent migration: add note_path TEXT column to alphas table.
+    try:
+        conn.execute("ALTER TABLE alphas ADD COLUMN note_path TEXT")
         conn.commit()
     except sqlite3.OperationalError:
         pass  # Column already exists — idempotent
@@ -112,6 +130,32 @@ def upsert_checks(conn: sqlite3.Connection, alpha_id: str, checks_list: list) ->
     conn.executemany(
         "INSERT OR REPLACE INTO checks (alpha_id, name, result, value, limit_val, checked_at) "
         "VALUES (?, ?, ?, ?, ?, ?)",
+        rows,
+    )
+    conn.commit()
+
+
+def append_checks_history(
+    conn: sqlite3.Connection,
+    alpha_id: str,
+    checks_list: list,
+    run_tag: str = "",
+) -> None:
+    """Append check rows to checks_history (never overwrites). Thread-safe via WAL.
+
+    Uses plain INSERT (not INSERT OR REPLACE) so every call adds new rows,
+    preserving the full time-series history needed by the decay monitor.
+    """
+    now = datetime.utcnow().isoformat()
+    rows = [
+        (alpha_id, c["name"], c.get("result"), c.get("value"), c.get("limit"),
+         now, run_tag)
+        for c in checks_list
+    ]
+    conn.executemany(
+        "INSERT INTO checks_history "
+        "(alpha_id, name, result, value, limit_val, checked_at, run_tag) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
         rows,
     )
     conn.commit()

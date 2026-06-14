@@ -59,7 +59,7 @@ _BASE_SETTINGS = {
 }
 
 
-def _simulate_to_alpha(client, expression: str, attempts: int = 3):
+def _simulate_to_alpha(client, expression: str, settings: dict = None, attempts: int = 3):
     """Run simulate → wait → get_alpha with retries; return (sim, alpha_dict).
 
     The vendored SDK's wait() treats "no Retry-After header" as completion, but
@@ -67,11 +67,15 @@ def _simulate_to_alpha(client, expression: str, attempts: int = 3):
     finished alpha (throttle/queue), leaving alpha_id None and making get_alpha()
     raise. Retry a few times with backoff. A 401 propagates immediately — the
     session expired and we never re-authenticate inside the loop.
+
+    settings: optional dict to override _BASE_SETTINGS for this simulation.
+    When None, falls back to _BASE_SETTINGS (backward-compatible).
     """
+    active_settings = settings if settings is not None else _BASE_SETTINGS
     last_err = None
     for attempt in range(1, attempts + 1):
         try:
-            sim = client.simulate(expression, settings=_BASE_SETTINGS)
+            sim = client.simulate(expression, settings=active_settings)
             sim.wait(verbose=False)
             if getattr(sim, "alpha_id", None):
                 return sim, sim.get_alpha()
@@ -95,6 +99,7 @@ def grade_one(
     expression: str,
     run_id: str,
     parent_alpha_id: Optional[str] = None,
+    settings: Optional[dict] = None,
 ) -> dict:
     """Grade a single expression: validate → simulate → IS checks → (if survivor) POST /check → persist.
 
@@ -105,6 +110,9 @@ def grade_one(
     parent_alpha_id: when provided, this expression is a mutation of that parent.
         Hook A (proxy_gate) will run before simulation to skip wasteful sims.
         The parent lineage is persisted in the alpha row.
+
+    settings: optional dict to override _BASE_SETTINGS for this simulation.
+    When None, falls back to _BASE_SETTINGS (backward-compatible).
 
     401 from any API call propagates immediately and stops the run.
     """
@@ -145,7 +153,7 @@ def grade_one(
     # CRITICAL: call simulate(expression) with expression as the ONLY positional arg.
     # NEVER pass regular= keyword — the SDK silently drops expression if you do.
     print(f"[grade] simulating: {expression[:50]}")
-    sim, alpha = _simulate_to_alpha(client, expression)
+    sim, alpha = _simulate_to_alpha(client, expression, settings=settings)
 
     # Extract alpha_id — try sim attribute first, then alpha dict.
     alpha_id: Optional[str] = getattr(sim, "alpha_id", None)
@@ -175,8 +183,9 @@ def grade_one(
         if c.get("result") != "PENDING"
     )
 
-    # Step 5 — Build settings_json (record the defaults used for this alpha)
-    settings_json = json.dumps(_BASE_SETTINGS)
+    # Step 5 — Build settings_json (record the actual settings used for this alpha)
+    active_settings = settings if settings is not None else _BASE_SETTINGS
+    settings_json = json.dumps(active_settings)
     status = "pass" if is_survivor else "fail"
 
     # Step 6 — Persist Phase A results
@@ -186,12 +195,12 @@ def grade_one(
         "expression": expression,
         "parent_alpha_id": parent_alpha_id,
         "archetype": None,
-        "region": _BASE_SETTINGS["region"],
-        "universe": _BASE_SETTINGS["universe"],
-        "delay": _BASE_SETTINGS["delay"],
-        "decay": _BASE_SETTINGS["decay"],
-        "neutralization": _BASE_SETTINGS["neutralization"],
-        "truncation": _BASE_SETTINGS["truncation"],
+        "region": active_settings["region"],
+        "universe": active_settings["universe"],
+        "delay": active_settings["delay"],
+        "decay": active_settings["decay"],
+        "neutralization": active_settings["neutralization"],
+        "truncation": active_settings["truncation"],
         "settings_json": settings_json,
         "sharpe": sharpe,
         "fitness": fitness,
@@ -326,6 +335,7 @@ def grade_many(
     max_workers: int = 1,
     db_path: Optional[str] = None,
     parent_map: Optional[dict] = None,
+    settings_map: Optional[dict] = None,
 ) -> list:
     """Grade a list of expressions. max_workers ≤ MAX_CONCURRENT_SIMS (BRAIN cap).
 
@@ -335,6 +345,10 @@ def grade_many(
 
     parent_map: optional dict[str, str] mapping expression → parent_alpha_id.
     Overrides tuple-based parent when both are provided.
+
+    settings_map: optional dict[str, dict] mapping expression → settings override.
+    When provided, each expression's grade_one call receives the matched settings dict
+    instead of _BASE_SETTINGS. Expressions not in settings_map use _BASE_SETTINGS.
 
     Sequential (max_workers=1) reuses the caller's connection on the main thread.
     For max_workers > 1, each worker opens its OWN SQLite connection — a single
@@ -362,8 +376,10 @@ def grade_many(
         # WR-06: same failure isolation as the concurrent path — one failure must not
         # abort the entire batch. Re-raise 401 (auth expiry), all others → error result.
         for expr, pid in pairs:
+            expr_settings = settings_map.get(expr) if settings_map else None
             try:
-                result = grade_one(client, conn, expr, run_id, parent_alpha_id=pid)
+                result = grade_one(client, conn, expr, run_id, parent_alpha_id=pid,
+                                   settings=expr_settings)
                 results.append(result)
             except requests.exceptions.HTTPError as e:
                 if getattr(getattr(e, "response", None), "status_code", None) == 401:
@@ -379,9 +395,11 @@ def grade_many(
 
         def _grade_isolated(pair):
             expr, pid = pair
+            expr_settings = settings_map.get(expr) if settings_map else None
             worker_conn = db.init_db(path)
             try:
-                return grade_one(client, worker_conn, expr, run_id, parent_alpha_id=pid)
+                return grade_one(client, worker_conn, expr, run_id, parent_alpha_id=pid,
+                                 settings=expr_settings)
             except requests.exceptions.HTTPError as e:
                 # 401 = auth expired: abort the entire run (never re-auth in-loop).
                 if getattr(getattr(e, "response", None), "status_code", None) == 401:
