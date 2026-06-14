@@ -491,6 +491,107 @@ def test_wikilinks_in_notes(tmp_path, conn):
 
 
 # ---------------------------------------------------------------------------
+# GRADE-SETTINGS-FIDELITY: BRAIN returned settings trump requested settings
+# ---------------------------------------------------------------------------
+
+
+def test_grade_records_brain_actual_settings():
+    """BRAIN is the source of truth for simulation settings.
+
+    BRAIN silently coerces some settings (e.g., delay=0 → delay=1). grade_one
+    must persist what BRAIN actually ran, not what was requested. This test
+    passes settings={"delay": 0, ...} (the REQUEST) but configures the mock
+    BRAIN response to carry {"settings": {"delay": 1, ...}} — the coerced value.
+    After grade_one completes, the DB row must show delay=1 (BRAIN's value) in
+    both the delay column and settings_json["delay"].
+
+    Red-green contract: fails against the old grade.py (which wrote active_settings
+    verbatim); passes with the fixed grade.py (which reads alpha.get("settings")).
+    """
+    import json
+    from unittest.mock import MagicMock, patch
+
+    import db
+    import grade
+
+    conn = db.init_db(":memory:")
+
+    # Build mock BRAIN response: alpha dict with "settings" carrying delay=1
+    mock_alpha_dict = {
+        "id": "TEST_BRAIN_ACTUAL",
+        "is": {
+            "sharpe": 1.5,
+            "fitness": 1.2,
+            "checks": [{"result": "PASS", "name": "SHARPE"}],
+        },
+        "settings": {
+            "delay": 1,
+            "region": "USA",
+            "universe": "TOP3000",
+            "decay": 15,
+            "neutralization": "SUBINDUSTRY",
+            "truncation": 0.08,
+        },
+    }
+
+    mock_sim = MagicMock()
+    mock_sim.wait.return_value = None
+    mock_sim.alpha_id = "TEST_BRAIN_ACTUAL"
+    mock_sim.get_alpha.return_value = mock_alpha_dict
+
+    mock_client = MagicMock()
+    mock_client.simulate.return_value = mock_sim
+
+    # Patch validate so the test expression passes local validation, selfcorr helpers
+    # so we don't hit real PnL / correlation logic, and Phase B correlation checks
+    # so the test doesn't block on the 300-second poll_correlation timeout.
+    with patch("validate.validate", return_value=(True, None)), \
+         patch("selfcorr.proxy_gate", return_value=False), \
+         patch("selfcorr.fetch_and_cache_pnl", return_value=None), \
+         patch("grade.trigger_correlation_check", return_value=None), \
+         patch("grade.poll_correlation", return_value={}):
+        grade.grade_one(
+            mock_client,
+            conn,
+            "close / open",
+            run_id="test-run",
+            settings={
+                "delay": 0,          # REQUEST: delay=0
+                "region": "USA",
+                "universe": "TOP3000",
+                "decay": 15,
+                "neutralization": "SUBINDUSTRY",
+                "truncation": 0.08,
+            },
+        )
+
+    row = conn.execute(
+        "SELECT delay, settings_json FROM alphas WHERE alpha_id=?",
+        ("TEST_BRAIN_ACTUAL",),
+    ).fetchone()
+
+    assert row is not None, (
+        "grade_one did not insert a row for TEST_BRAIN_ACTUAL — check for early return"
+    )
+
+    col_delay = row[0]
+    sj_delay = json.loads(row[1])["delay"] if row[1] else None
+
+    assert col_delay == 1, (
+        f"GRADE-SETTINGS-FIDELITY FAIL: delay column is {col_delay!r}; "
+        f"expected 1 (BRAIN's returned value). grade_one must persist BRAIN's "
+        f"returned settings, not the requested settings (delay=0 was the request)."
+    )
+    assert sj_delay == 1, (
+        f"GRADE-SETTINGS-FIDELITY FAIL: settings_json['delay'] is {sj_delay!r}; "
+        f"expected 1 (BRAIN's returned value). settings_json must reflect what "
+        f"BRAIN actually ran, not what was requested."
+    )
+
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Entry point — mirrors test_phase3.py pattern
 # ---------------------------------------------------------------------------
 

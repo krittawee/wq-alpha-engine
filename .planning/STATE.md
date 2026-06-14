@@ -28,7 +28,7 @@ See: .planning/PROJECT.md (updated 2026-06-07)
 Phase: 04
 Plan: Not started
 Status: Milestone complete
-Last activity: 2026-06-11
+Last activity: 2026-06-11 - Completed quick task 260611-l3w: fix grade.py settings recording + correct 11 mislabeled DB delay rows
 
 Progress: [██████████] 100%
 
@@ -84,6 +84,12 @@ None yet.
 - Biometric (Persona) re-auth is periodic; single-shot login only — a 401 stops the run and must surface rather than retry (never re-auth in loop)
 - SDK simulate() `regular` param is buggy — always call simulate(expr) with default regular
 - autobrain-sim lacks operators/datafields/check/submit — all must be hand-written against raw endpoints
+
+### Quick Tasks Completed
+
+| # | Description | Date | Commit | Directory |
+|---|-------------|------|--------|-----------|
+| 260611-l3w | Fix grade.py to record BRAIN's actual returned settings (not requested); correct 11 mislabeled delay-0→delay-1 DB rows | 2026-06-11 | b70c3fd | [260611-l3w-grade-actual-settings-fix](./quick/260611-l3w-grade-actual-settings-fix/) |
 
 ## Deferred Items
 

@@ -183,9 +183,25 @@ def grade_one(
         if c.get("result") != "PENDING"
     )
 
-    # Step 5 — Build settings_json (record the actual settings used for this alpha)
+    # Step 5 — Build settings_json (record BRAIN's returned settings; fall back to
+    # requested settings if BRAIN response has no settings dict)
     active_settings = settings if settings is not None else _BASE_SETTINGS
-    settings_json = json.dumps(active_settings)
+    brain_settings = alpha.get("settings") or {}
+    # For each persisted field: BRAIN's returned value wins; active_settings is fallback.
+    resolved_region        = brain_settings.get("region",         active_settings.get("region"))
+    resolved_universe      = brain_settings.get("universe",       active_settings.get("universe"))
+    resolved_delay         = brain_settings.get("delay",          active_settings.get("delay"))
+    resolved_decay         = brain_settings.get("decay",          active_settings.get("decay"))
+    resolved_neutralization= brain_settings.get("neutralization", active_settings.get("neutralization"))
+    resolved_truncation    = brain_settings.get("truncation",     active_settings.get("truncation"))
+    settings_json = json.dumps({
+        "region":         resolved_region,
+        "universe":       resolved_universe,
+        "delay":          resolved_delay,
+        "decay":          resolved_decay,
+        "neutralization": resolved_neutralization,
+        "truncation":     resolved_truncation,
+    })
     status = "pass" if is_survivor else "fail"
 
     # Step 6 — Persist Phase A results
@@ -195,12 +211,12 @@ def grade_one(
         "expression": expression,
         "parent_alpha_id": parent_alpha_id,
         "archetype": None,
-        "region": active_settings["region"],
-        "universe": active_settings["universe"],
-        "delay": active_settings["delay"],
-        "decay": active_settings["decay"],
-        "neutralization": active_settings["neutralization"],
-        "truncation": active_settings["truncation"],
+        "region": resolved_region,
+        "universe": resolved_universe,
+        "delay": resolved_delay,
+        "decay": resolved_decay,
+        "neutralization": resolved_neutralization,
+        "truncation": resolved_truncation,
         "settings_json": settings_json,
         "sharpe": sharpe,
         "fitness": fitness,
