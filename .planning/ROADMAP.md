@@ -193,7 +193,20 @@ Plans:
   3. Any code path that produces a submit recommendation (hunt output, brute-force output) invokes the additivity gate and withholds the recommendation if the gate fails — a candidate cannot be labeled submit-ready by passing IS checks alone
   4. The same gate function can be called as a rank-score (returns a float) or as a yes/no filter (returns a boolean) so it is reusable in both discovery (Tool B ranking) and refinement (/iterate decorrelate mode)
 
-**Plans**: TBD
+**Plans**: 3 plans
+
+Plans:
+**Wave 1** *(independent)*
+
+- [ ] 06-01-PLAN.md — selfcorr.py: get_book_pnl_paths (status=ACTIVE only) + _null_stale_pnl_paths + backfill_active_pnl D-04 fix + 4 offline tests
+
+**Wave 2** *(blocked on Wave 1)*
+
+- [ ] 06-02-PLAN.md — additivity.py: AdditivityResult dataclass + _combined_book_corr + rank_by_proxy (zero BRAIN calls) + confirm_additive (reads BRAIN live limit) + 9 offline tests
+
+**Wave 3** *(blocked on Wave 2)*
+
+- [ ] 06-03-PLAN.md — hunt.py: _apply_additivity_gate helper + both best_submittable sites wired + 2 integration tests
 
 ### Phase 7: Brute-Force Tool (Tool B)
 

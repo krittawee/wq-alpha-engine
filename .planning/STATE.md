@@ -3,13 +3,13 @@ gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Additive Alpha Discovery
 status: executing
-stopped_at: Phase 5 complete (delay-0 confirmed feasible from code)
-last_updated: "2026-06-13T12:30:00.000Z"
-last_activity: 2026-06-13
+stopped_at: Phase 5 complete (all 3 plans) — delay-0 confirmed feasible from code
+last_updated: "2026-06-13T16:40:51.949Z"
+last_activity: 2026-06-13 -- Phase 6 planning complete
 progress:
   total_phases: 9
   completed_phases: 5
-  total_plans: 24
+  total_plans: 27
   completed_plans: 24
   percent: 56
 ---
@@ -25,10 +25,10 @@ See: .planning/PROJECT.md (updated 2026-06-07)
 
 ## Current Position
 
-Phase: 05 (delay-0-feasibility-plumbing) — COMPLETE
-Plan: 3 of 3 complete
-Status: Phase 5 done — delay-0 confirmed feasible from code (Test A PASS, alpha e7rvXqwz). Next: Phase 6.
-Last activity: 2026-06-13 - Completed quick task 260613-ldy (winsorize std= named param + grade.py real-error surfacing)
+Phase: 06 (additivity-gate) — CONTEXT GATHERED (ready to plan)
+Plan: 0 of TBD
+Status: Ready to execute
+Last activity: 2026-06-13 -- Phase 6 planning complete
 
 ## Performance Metrics
 
@@ -85,7 +85,7 @@ Recent decisions affecting current work:
 
 ### Pending Todos
 
-- **OPEN bug #5 (delay-0 hunt):** `grade.py:160` has a 2nd delay-blind dedup — `db.expr_exists(conn, expression)` with no delay. Skips delay-0 candidates that exist at delay-1 as duplicates (skipped 4/5 last run). Fix: pass `delay=active_settings.get("delay", delay)` (active_settings already computed at grade.py:153-155). Same class as the 260613-kpu dedup fix, missed location.
+- **RESOLVED bug #5 (quick 260613-rvl):** `grade.py:160` 2nd delay-blind dedup fixed. `expr_exists` stays delay-blind (NULL-delay stubs must still match) but the duplicate-skip now only fires when the stored row's delay == effective_delay; different-delay matches fall through and simulate. Queued-stub inheritance preserved. 3 regression tests.
 - **Minor:** clearing `pnl_cache/` files doesn't force re-backfill because `alphas.pnl_path` still set → backfill skips them. Null `pnl_path` too for a full refresh.
 - delay-0 `/hunt` pipeline confirmed working end-to-end 2026-06-13 (first real delay-0 alpha 58vYLN21, Sharpe 0.37/fail). Finding a GOOD delay-0 alpha is now a search-breadth problem → Phase 6+. See memory [[delay0-hunt-pipeline-state]].
 - Next direction (user 2026-06-13): set up remote-control, then start Phase 6 (additivity gate).
@@ -103,7 +103,8 @@ Recent decisions affecting current work:
 |---|-------------|------|--------|-----------|
 | 260611-l3w | Fix grade.py to record BRAIN's actual returned settings (not requested); correct 11 mislabeled delay-0→delay-1 DB rows | 2026-06-11 | b70c3fd | [260611-l3w-grade-actual-settings-fix](./quick/260611-l3w-grade-actual-settings-fix/) |
 | 260613-kpu | Fix delay-blind novelty dedup (db.expr_exists/ideator/hunt now key on (expression, delay)) + selfcorr PnL parser (schema+records) — unblocks delay-0 hunt candidate generation | 2026-06-13 | 40dc170 | [260613-kpu-fix-delay-blind-novelty-dedup-and-selfco](./quick/260613-kpu-fix-delay-blind-novelty-dedup-and-selfco/) |
-| 260613-ldy | Fix winsorize named-param (emit `winsorize(x, std=4)`; validate.py excludes named-arg keys) + grade.py surfaces real BRAIN sim ERROR instead of "throttle" mislabel — delay-independent, unblocks fundamental archetypes | 2026-06-13 | (this commit) | [260613-ldy-fix-winsorize-named-param-std-in-ideator](./quick/260613-ldy-fix-winsorize-named-param-std-in-ideator/) |
+| 260613-ldy | Fix winsorize named-param (emit `winsorize(x, std=4)`; validate.py excludes named-arg keys) + grade.py surfaces real BRAIN sim ERROR instead of "throttle" mislabel — delay-independent, unblocks fundamental archetypes | 2026-06-13 | e93ab15 | [260613-ldy-fix-winsorize-named-param-std-in-ideator](./quick/260613-ldy-fix-winsorize-named-param-std-in-ideator/) |
+| 260613-rvl | Make grade_one dedup delay-aware (bug #5): 2nd delay-blind expr_exists; duplicate-skip now keyed on (expression, effective_delay) while keeping NULL-delay queued-stub inheritance | 2026-06-13 | (this commit) | [260613-rvl-make-grade-py-grade-one-dedup-delay-awar](./quick/260613-rvl-make-grade-py-grade-one-dedup-delay-awar/) |
 
 ## Deferred Items
 

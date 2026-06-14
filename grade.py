@@ -154,22 +154,32 @@ def grade_one(
     else:
         active_settings = {**_BASE_SETTINGS, "delay": delay}
 
+    # Compute effective_delay from active_settings (set above). active_settings["delay"]
+    # wins when a full settings dict was passed by the caller (e.g. probe_and_gate path).
+    effective_delay = active_settings.get("delay", delay)
+
     # Step 0 — Dedupe check
-    # If an existing row is a 'queued' stub (pre-inserted by editor.diagnose_and_mutate),
-    # we must NOT skip it — instead inherit its lineage and simulate to replace it.
+    # db.expr_exists is intentionally delay-BLIND: stubs have NULL delay (editor.py
+    # never sets delay on upsert), so a delay-aware query would miss them.
+    # The delay comparison below only applies to non-queued rows.
     existing_id = db.expr_exists(conn, expression)
     stub_id_to_replace: Optional[str] = None
     if existing_id is not None:
         row = conn.execute(
-            "SELECT status, parent_alpha_id FROM alphas WHERE alpha_id=?", (existing_id,)
+            "SELECT status, parent_alpha_id, delay FROM alphas WHERE alpha_id=?", (existing_id,)
         ).fetchone()
         if row is None or row[0] != "queued":
-            print(f"[grade] skip duplicate: {expression[:40]}")
-            return {"expression": expression, "status": "duplicate", "alpha_id": existing_id}
-        # It's a queued stub — inherit lineage and continue to simulate
-        if parent_alpha_id is None:
-            parent_alpha_id = row[1]
-        stub_id_to_replace = existing_id
+            stored_delay = row[2] if row is not None else None
+            if stored_delay == effective_delay:
+                print(f"[grade] skip duplicate: {expression[:40]}")
+                return {"expression": expression, "status": "duplicate", "alpha_id": existing_id}
+            # Different delay — treat as a genuinely new (expression, delay) pair; fall through
+            existing_id = None  # clear so stub_id_to_replace is not set
+        else:
+            # It's a queued stub — inherit lineage and continue to simulate
+            if parent_alpha_id is None:
+                parent_alpha_id = row[1]
+            stub_id_to_replace = existing_id
 
     # Step 1 — Local validation
     is_valid, reason = validate.validate(conn, expression)

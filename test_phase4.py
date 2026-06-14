@@ -1185,6 +1185,198 @@ class TestGradeSurfacesBrainError(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
+# DEDUP-DELAY-AWARE: grade_one Step-0 compares stored delay before skipping
+# (Bug fix for BUG-5-dedup-delay-blind, quick task 260613-rvl)
+# ---------------------------------------------------------------------------
+
+
+def _make_sim_alpha(alpha_id: str, delay: int) -> tuple:
+    """Helper: build a (sim_mock, alpha_dict) pair grade_one can process without errors."""
+    from unittest.mock import MagicMock
+
+    mock_sim = MagicMock()
+    mock_sim.alpha_id = alpha_id
+    alpha_dict = {
+        "id": alpha_id,
+        "is": {
+            "sharpe": 0.5,
+            "fitness": 0.4,
+            "checks": [],
+        },
+        "settings": {
+            "delay": delay,
+            "region": "USA",
+            "universe": "TOP3000",
+            "decay": 0,
+            "neutralization": "NONE",
+            "truncation": 0.08,
+        },
+    }
+    return mock_sim, alpha_dict
+
+
+def test_grade_dedup_cross_delay_not_duplicate():
+    """(a) grade_one(delay=0) must NOT skip an expression that exists at delay=1.
+
+    The same expression exists in DB with status='graded' and delay=1.
+    Calling grade_one with delay=0 must treat it as genuinely new and reach
+    the simulate step (not return status='duplicate').
+    """
+    from unittest.mock import MagicMock, patch
+
+    import db
+    import grade
+
+    conn = db.init_db(":memory:")
+
+    # Seed: expression exists at delay=1 (graded, non-queued)
+    db.upsert_alpha(conn, {
+        "alpha_id": "OLD01",
+        "expression": "rank(close)",
+        "delay": 1,
+        "status": "graded",
+        "run_id": "seed-run",
+    })
+
+    mock_simulate = MagicMock(return_value=_make_sim_alpha("FAKE01", delay=0))
+
+    with patch("validate.validate", return_value=(True, None)), \
+         patch("selfcorr.proxy_gate", return_value=False), \
+         patch("selfcorr.fetch_and_cache_pnl", return_value=None), \
+         patch("grade.trigger_correlation_check", return_value=None), \
+         patch("grade.poll_correlation", return_value={}), \
+         patch("grade._simulate_to_alpha", mock_simulate):
+        result = grade.grade_one(
+            MagicMock(),  # client — not used (simulate is patched)
+            conn,
+            "rank(close)",
+            run_id="run1",
+            delay=0,
+        )
+
+    assert result.get("status") != "duplicate", (
+        f"grade_one returned 'duplicate' for delay=0 when expression exists at delay=1; "
+        f"expected it to proceed as novel. Got: {result}"
+    )
+    assert mock_simulate.called, (
+        "grade._simulate_to_alpha was not called — grade_one short-circuited as duplicate "
+        "even though the stored delay (1) != requested delay (0)"
+    )
+
+    conn.close()
+
+
+def test_grade_dedup_same_delay_is_duplicate():
+    """(b) grade_one(delay=1) MUST skip an expression that already exists at delay=1.
+
+    Regression guard: the fix must not over-loosen dedup. An expression graded at
+    the same delay as requested must still return status='duplicate'.
+    """
+    from unittest.mock import MagicMock, patch
+
+    import db
+    import grade
+
+    conn = db.init_db(":memory:")
+
+    # Seed: expression exists at delay=1 (graded, non-queued)
+    db.upsert_alpha(conn, {
+        "alpha_id": "OLD01",
+        "expression": "rank(close)",
+        "delay": 1,
+        "status": "graded",
+        "run_id": "seed-run",
+    })
+
+    mock_simulate = MagicMock()
+
+    with patch("validate.validate", return_value=(True, None)), \
+         patch("selfcorr.proxy_gate", return_value=False), \
+         patch("grade._simulate_to_alpha", mock_simulate):
+        result = grade.grade_one(
+            MagicMock(),
+            conn,
+            "rank(close)",
+            run_id="run1",
+            delay=1,
+        )
+
+    assert result.get("status") == "duplicate", (
+        f"Expected status='duplicate' when expression exists at same delay=1; got {result}"
+    )
+    assert result.get("alpha_id") == "OLD01", (
+        f"Expected alpha_id='OLD01' in duplicate result; got {result.get('alpha_id')!r}"
+    )
+    assert not mock_simulate.called, (
+        "grade._simulate_to_alpha was called — grade_one must short-circuit as duplicate "
+        "when stored delay (1) matches requested delay (1)"
+    )
+
+    conn.close()
+
+
+def test_grade_dedup_queued_stub_inherited():
+    """(c) grade_one(delay=0) must NOT skip a queued stub (NULL delay); lineage inherited.
+
+    A queued stub has NULL delay (editor.py never sets delay on upsert). grade_one
+    must detect it as a stub, inherit parent_alpha_id, and proceed to simulate
+    (not return status='duplicate').
+    """
+    from unittest.mock import MagicMock, patch
+
+    import db
+    import grade
+
+    conn = db.init_db(":memory:")
+
+    # Seed: expression exists as a queued stub with parent, no delay set
+    db.upsert_alpha(conn, {
+        "alpha_id": "stub-abc12345",
+        "expression": "rank(volume)",
+        "parent_alpha_id": "PARENT01",
+        "delay": None,           # stubs have NULL delay — intentional
+        "status": "queued",
+        "run_id": "seed-run",
+    })
+
+    mock_simulate = MagicMock(return_value=_make_sim_alpha("FAKE02", delay=0))
+
+    with patch("validate.validate", return_value=(True, None)), \
+         patch("selfcorr.proxy_gate", return_value=False), \
+         patch("selfcorr.fetch_and_cache_pnl", return_value=None), \
+         patch("grade.trigger_correlation_check", return_value=None), \
+         patch("grade.poll_correlation", return_value={}), \
+         patch("grade._simulate_to_alpha", mock_simulate):
+        result = grade.grade_one(
+            MagicMock(),
+            conn,
+            "rank(volume)",
+            run_id="run1",
+            delay=0,
+        )
+
+    assert result.get("status") != "duplicate", (
+        f"grade_one returned 'duplicate' for a queued stub — it must proceed as novel. Got: {result}"
+    )
+    assert mock_simulate.called, (
+        "grade._simulate_to_alpha was not called — queued stub must not short-circuit as duplicate"
+    )
+
+    # Verify parent lineage was inherited: grade_one inherited parent_alpha_id="PARENT01" from
+    # the stub row and passed it forward. The result dict includes parent_alpha_id when it was
+    # set internally (it appears in the persisted DB row).
+    row = conn.execute(
+        "SELECT parent_alpha_id FROM alphas WHERE alpha_id=?", ("FAKE02",)
+    ).fetchone()
+    assert row is not None, "grade_one did not persist the result row for FAKE02"
+    assert row[0] == "PARENT01", (
+        f"Expected parent_alpha_id='PARENT01' inherited from stub; got {row[0]!r}"
+    )
+
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Entry point — mirrors test_phase3.py pattern
 # ---------------------------------------------------------------------------
 
