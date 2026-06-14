@@ -15,6 +15,24 @@ Produce a **decent, genuinely-submittable alpha — verified against BRAIN's own
 (never guessed)** — while remembering every alpha tried so the system never repeats
 itself and every result adds to its diversity-aware memory.
 
+## Current Milestone: v1.1 — Additive Alpha Discovery
+
+**Goal:** Produce alphas that *add to the team competition score* (decorrelated from the
+existing book) with verified delay-0 support — not merely alphas that pass BRAIN's checks.
+**Additivity is the objective; passing the checks is the constraint** — learned when a fully
+"submittable" alpha would have dropped the team d1 score by 112 (too correlated to add).
+
+**Target features:**
+- **Additivity gate** — local PnL correlation proxy + real BRAIN correlation check; nothing recommended for submit without it
+- **delay-0 support** — verify BRAIN actually runs delay-0 from code (fix the send-path if coerced); thread `--delay` through the pipeline
+- **Brute-force tool (Tool B)** — in-repo template enumeration (ACE template *shapes*, not its runtime), pre-filter → probe → bulk-sim → gate; runs standalone, no AI dependency
+- **Evolve `/hunt`** (`--delay`, additivity-gated) and fold `/find-alphas` → `/hunt --research-only`
+- **`/iterate` decorrelate mode** — improve an already-submittable alpha's additivity, constrained to stay passing
+
+Full design: `docs/plans/2026-06-11-additive-alpha-discovery-design.md`. Two decoupled tools
+share ONE BRAIN session (single-shot auth); ACE auto-submit stays OFF; submission stays manual.
+Deferred: shared sim-queue for true simultaneity, and the LLM learning/memory loop.
+
 ## Requirements
 
 ### Validated
@@ -23,15 +41,20 @@ itself and every result adds to its diversity-aware memory.
 
 - ✓ Biometric-aware BRAIN login — Persona handshake + 429 throttle handling (`wq_login.py`)
 - ✓ End-to-end simulate → `get_alpha` → read IS stats chain (`test_sim.py`)
+- ✓ v1.0 Phase 1 — MVP grading engine (sync catalog + alphas → SQLite, local validator, two-phase grade, persist)
+- ✓ v1.0 Phase 2 — Grounded generation (Researcher + Ideator agents)
+- ✓ v1.0 Phase 3 — Smart iteration (Editor diagnose+mutate, dedupe, self-corr pre-filter, Frequent Subtree Avoidance)
+- ✓ v1.0 Phase 4 — Optimization & polish (Settings Optimizer, decay monitor, Obsidian prose layer)
 
 ### Active
 
-<!-- Current scope — building toward these. -->
+<!-- Current scope — v1.1 Additive Alpha Discovery. Detailed REQ-IDs in REQUIREMENTS.md. -->
 
-- [ ] Phase 1 — MVP grading engine (sync catalog + alphas → SQLite, local validator, two-phase grade, persist)
-- [ ] Phase 2 — Grounded generation (Researcher + Ideator agents)
-- [ ] Phase 3 — Smart iteration (Editor diagnose+mutate, dedupe, self-corr pre-filter, Frequent Subtree Avoidance)
-- [ ] Phase 4 — Optimization & polish (knowledge-driven Settings Optimizer, decay monitor, Obsidian prose layer)
+- [ ] Additivity gate (the keystone — passes-AND-adds)
+- [ ] delay-0 support (verify BRAIN runs it; fix send-path; `--delay` plumbing)
+- [ ] Brute-force generation tool (Tool B — in-repo, standalone, no AI dependency)
+- [ ] Evolve `/hunt` (`--delay`, additivity-gated) + fold `/find-alphas`
+- [ ] `/iterate` decorrelate mode (improve a submittable alpha's additivity)
 
 ### Out of Scope
 

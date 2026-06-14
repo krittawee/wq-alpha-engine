@@ -9,6 +9,11 @@ resolves correlations via POST /check, and persists everything to SQLite. Phases
 add the LLM loop (Researcher, Ideator, Editor agents). Phase 4 adds knowledge-driven
 settings tuning, decay monitoring, and the Obsidian prose layer.
 
+**v1.1 (Phases 5–9)** reframes the goal: additivity is the objective, passing checks is
+the constraint. Adds delay-0 support with coercion detection, the additivity gate (local
+PnL proxy + real BRAIN correlation confirm), a standalone brute-force generation tool
+(Tool B), evolved `/hunt` + `/iterate`, and `/iterate`'s new decorrelate mode.
+
 ## Phases
 
 **Phase Numbering:**
@@ -20,6 +25,11 @@ settings tuning, decay monitoring, and the Obsidian prose layer.
 - [x] **Phase 2: Grounded Generation** - Researcher + Ideator agents reading verified catalog and memory to produce grounded FastExpr candidates (completed 2026-06-08)
 - [x] **Phase 3: Smart Iteration** - Editor diagnose+mutate loop, memory-aware dedupe, local PnL pre-filter, Frequent Subtree Avoidance (completed 2026-06-10)
 - [x] **Phase 4: Optimization & Polish** - Knowledge-driven Settings Optimizer, decay monitor, Obsidian prose layer (completed 2026-06-11)
+- [ ] **Phase 5: Delay-0 Feasibility & Plumbing** - Confirm BRAIN runs delay-0 from code; detect silent coercion; thread `--delay` end-to-end
+- [ ] **Phase 6: Additivity Gate** - Local PnL correlation proxy to rank candidates + real BRAIN correlation confirm; reusable as filter and as score
+- [ ] **Phase 7: Brute-Force Tool (Tool B)** - In-repo template enumeration, local validate, probe-sim, bulk-sim, additivity gate; fully standalone; no AI dependency
+- [ ] **Phase 8: Evolve /hunt + Fold /find-alphas** - Add `--delay`, additivity-gated selection to /hunt; retire /find-alphas as `/hunt --research-only`
+- [ ] **Phase 9: /iterate Decorrelate Mode** - Given a passing alpha, search neutralization/settings/mutation variants for the most-additive one that still passes all checks
 
 ## Phase Details
 
@@ -145,14 +155,87 @@ Plans:
 
 - [x] 04-06-PLAN.md — command files (.claude/commands/optimize.md, decay.md) + full test suite run + human-verify checkpoint (all 3 ROADMAP criteria)
 
+### Phase 5: Delay-0 Feasibility & Plumbing
+
+**Goal**: Confirmed that BRAIN actually runs delay-0 from code (not silently coerced to delay-1), with coercion detection wired in and `--delay` threaded through the full pipeline
+**Depends on**: Phase 4
+**Requirements**: DLY-01, DLY-02
+**Success Criteria** (what must be TRUE):
+
+  1. Running a single delay-0 simulation from code and inspecting BRAIN's returned settings shows `delay=0` — if BRAIN returns `delay=1` instead, the discrepancy is logged as a coercion warning before the phase proceeds
+  2. `grade.py` (and any downstream grading path) compares the requested delay against the value in BRAIN's returned settings object and raises a visible warning whenever they differ — the recorded DB row always stores BRAIN's actual returned delay, never the requested value
+  3. `/hunt --delay 0` and `/bruteforce --delay 0` (once built) pass the delay parameter end-to-end from the CLI to the simulate call without silent override
+
+**Plans**: TBD
+
+### Phase 6: Additivity Gate
+
+**Goal**: A reusable additivity gate is available that ranks candidates by cheap local PnL correlation (no BRAIN call) and confirms finalists with a real BRAIN correlation check — nothing is presented as submit-ready without passing both layers
+**Depends on**: Phase 4 (selfcorr primitives, grade primitives)
+**Requirements**: ADD-01, ADD-02, ADD-03, ADD-04
+**Success Criteria** (what must be TRUE):
+
+  1. Given a set of candidate PnL series, `additivity.rank_by_proxy()` returns them sorted by estimated book correlation using the local PnL proxy, producing a ranked list with zero BRAIN API calls
+  2. For a finalist alpha (already simulated, IS-check passing), `additivity.confirm_additive()` calls `POST /alphas/{id}/check`, reads the SELF_CORRELATION / PROD_CORRELATION results from BRAIN's `is.checks`, and returns a boolean verdict using BRAIN's own limits — no hardcoded threshold
+  3. Any code path that produces a submit recommendation (hunt output, brute-force output) invokes the additivity gate and withholds the recommendation if the gate fails — a candidate cannot be labeled submit-ready by passing IS checks alone
+  4. The same gate function can be called as a rank-score (returns a float) or as a yes/no filter (returns a boolean) so it is reusable in both discovery (Tool B ranking) and refinement (/iterate decorrelate mode)
+
+**Plans**: TBD
+
+### Phase 7: Brute-Force Tool (Tool B)
+
+**Goal**: A standalone, AI-free in-repo tool (`/bruteforce`) enumerates parameterized templates, pre-filters locally, probe-sims a sample, bulk-sims survivors at ≤3 concurrent on one shared session, gates through additivity, and records only survivors plus structured failure reasons — with no second BRAIN login and no auto-submit
+**Depends on**: Phase 5 (delay plumbing), Phase 6 (additivity gate)
+**Requirements**: BF-01, BF-02, BF-03, BF-04, BF-05, BF-06
+**Success Criteria** (what must be TRUE):
+
+  1. User defines a template with operator/field/window slots; running `/bruteforce` enumerates all valid combinations using only verified catalog entries (zero unknown-token combinations reach simulation)
+  2. Before any simulation is attempted, every enumerated combination is passed through `validate.py` and any combination with an unrecognized operator or field token is dropped and counted — the pre-filter run is observable in the log
+  3. The tool probe-simulates a configurable small sample (e.g. 5 combinations) from a template; if no probe passes IS checks, the tool logs "template abandoned after probe" and skips the remaining combinations for that template without spending further simulation slots
+  4. Bulk simulation of survivors runs at concurrency ≤3, reusing the existing cached BRAIN session (no new login), and stops cleanly on quota met / session expiry (401) / dry — no combinations survive to the DB without passing the additivity gate
+  5. The tool runs end-to-end with the AI (LLM) completely absent from the process — it can be invoked when the Claude Code AI quota is exhausted, using only the cached BRAIN session
+
+**Plans**: TBD
+
+### Phase 8: Evolve /hunt + Fold /find-alphas
+
+**Goal**: `/hunt` selects and ranks results through the additivity gate (not Sharpe alone), accepts `--delay`, and the `/find-alphas` capability is fully absorbed as `/hunt --research-only` — no separate command needed
+**Depends on**: Phase 5 (delay plumbing), Phase 6 (additivity gate)
+**Requirements**: CMD-01, CMD-02
+**Success Criteria** (what must be TRUE):
+
+  1. `/hunt --delay 0` threads delay-0 through the full research→grade→select pipeline; the final recommendation list contains only delay-0 alphas and each carries an additivity verdict from the gate
+  2. The hunt loop's final selection ranks candidates by additivity score (local proxy first, BRAIN confirm for finalists) — a high-Sharpe but correlated alpha is ranked below a lower-Sharpe but additive one
+  3. Running `/hunt --research-only` executes the Researcher + Ideator steps only (no BRAIN calls, no grading) and emits the same thesis note that `/find-alphas` produced — the `/find-alphas` command is removed or redirects to this flag
+
+**Plans**: TBD
+
+### Phase 9: /iterate Decorrelate Mode
+
+**Goal**: Given an already-submittable alpha, `/iterate` can search neutralization, settings, and small mutation variants for the most-additive one that still passes all BRAIN checks — with additivity as the objective and submittability as the hard constraint
+**Depends on**: Phase 6 (additivity gate)
+**Requirements**: CMD-03
+**Success Criteria** (what must be TRUE):
+
+  1. Running `/iterate --decorrelate <alpha_id>` generates a set of variants (at minimum: neutralization swap, one settings variant, one small expression mutation) and grades each through the full IS-check + additivity gate
+  2. The output clearly distinguishes variants that pass all checks and improve additivity, variants that pass checks but do not improve additivity, and variants that fail a check — the user can see the additivity-vs-submittability tradeoff at a glance
+  3. The best variant returned is the one with the highest additivity score among those that still pass all IS checks — if no variant beats the original on additivity while staying passing, the command reports that the original is already the best available tradeoff
+
+**Plans**: TBD
+
 ## Progress
 
 **Execution Order:**
-Phases execute in numeric order: 1 → 2 → 3 → 4
+Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 → 9
 
 | Phase | Plans Complete | Status | Completed |
 |-------|----------------|--------|-----------|
 | 1. MVP Grading Engine | 5/5 | Complete | 2026-06-07 |
-| 2. Grounded Generation | 4/4 | Complete   | 2026-06-08 |
-| 3. Smart Iteration | 6/6 | Complete   | 2026-06-10 |
-| 4. Optimization & Polish | 6/6 | Complete   | 2026-06-11 |
+| 2. Grounded Generation | 4/4 | Complete | 2026-06-08 |
+| 3. Smart Iteration | 6/6 | Complete | 2026-06-10 |
+| 4. Optimization & Polish | 6/6 | Complete | 2026-06-11 |
+| 5. Delay-0 Feasibility & Plumbing | 0/TBD | Not started | - |
+| 6. Additivity Gate | 0/TBD | Not started | - |
+| 7. Brute-Force Tool (Tool B) | 0/TBD | Not started | - |
+| 8. Evolve /hunt + Fold /find-alphas | 0/TBD | Not started | - |
+| 9. /iterate Decorrelate Mode | 0/TBD | Not started | - |

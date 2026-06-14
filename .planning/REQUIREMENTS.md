@@ -36,6 +36,37 @@ Source of truth: `docs/plans/2026-06-07-alpha-system-design.md`.
 - [ ] **OPT-02**: A quality/decay monitor tracks alpha metric degradation over time using the time-stamped checks table
 - [ ] **OPT-03**: An Obsidian prose layer (theses, archetype heuristics, failure notes) is maintained and linked to alpha_ids in SQLite
 
+## v1.1 Requirements — Additive Alpha Discovery
+
+**Milestone goal:** Produce alphas that *add to the team competition score* (decorrelated from the existing book) with verified delay-0 support — not merely alphas that pass BRAIN's checks. Additivity is the objective; passing the checks is the constraint.
+
+### Additivity (passes-AND-adds)
+
+- [ ] **ADD-01**: System estimates a candidate's correlation to the user's existing book from a cheap local PnL proxy (no BRAIN call) so candidates can be ranked by likely additivity
+- [ ] **ADD-02**: System confirms a finalist's additivity with BRAIN's real correlation check before recommending it for submission
+- [ ] **ADD-03**: No alpha is presented as submit-ready unless it passes the additivity gate — passes all IS checks AND is decorrelated enough to add to the book
+- [ ] **ADD-04**: The additivity gate is reusable both as a yes/no filter (discovery) and as a rank-by score (refinement)
+
+### Delay (delay-0 support)
+
+- [ ] **DLY-01**: User can request delay-0 simulations through the pipeline (`--delay 0`), threaded end-to-end (hunt and brute-force)
+- [ ] **DLY-02**: System verifies BRAIN's *returned* delay matches the request and surfaces any silent coercion (delay-0 run as delay-1) rather than recording the wrong value
+
+### Brute-force generation (Tool B — standalone, no AI dependency)
+
+- [ ] **BF-01**: User can define a parameterized template (operator/field/window slots); system enumerates the valid combinations
+- [ ] **BF-02**: Every enumerated combination is locally validated against the catalog before any simulation is spent
+- [ ] **BF-03**: System probe-simulates a small sample of a template and abandons the template if the sample shows no viable alpha, before bulk-simulating
+- [ ] **BF-04**: System bulk-simulates surviving combinations at ≤3 concurrent on one shared session, stopping on quota met, session expiry, or dry
+- [ ] **BF-05**: The brute-force tool runs standalone with no AI dependency, reusing the existing cached BRAIN session (works when the AI quota is exhausted)
+- [ ] **BF-06**: System records survivors plus structured failure-reasons (not every raw combo) to the DB for future grounding
+
+### Command evolution
+
+- [ ] **CMD-01**: `/hunt` accepts `--delay` and selects/ranks results through the additivity gate (not Sharpe alone)
+- [ ] **CMD-02**: `/find-alphas` capability is available as `/hunt --research-only` (AI-only, no BRAIN, emits the thesis note); the standalone command is retired
+- [ ] **CMD-03**: `/iterate` gains a decorrelate mode — given an already-submittable alpha, it searches variants (neutralization, settings, small mutations) for the most-additive one that still passes
+
 ## v2 Requirements
 
 Deferred beyond this milestone.
@@ -74,12 +105,27 @@ Deferred beyond this milestone.
 | OPT-01 | Phase 4 | Pending |
 | OPT-02 | Phase 4 | Pending |
 | OPT-03 | Phase 4 | Pending |
+| DLY-01 | Phase 5 | Pending |
+| DLY-02 | Phase 5 | Pending |
+| ADD-01 | Phase 6 | Pending |
+| ADD-02 | Phase 6 | Pending |
+| ADD-03 | Phase 6 | Pending |
+| ADD-04 | Phase 6 | Pending |
+| BF-01 | Phase 7 | Pending |
+| BF-02 | Phase 7 | Pending |
+| BF-03 | Phase 7 | Pending |
+| BF-04 | Phase 7 | Pending |
+| BF-05 | Phase 7 | Pending |
+| BF-06 | Phase 7 | Pending |
+| CMD-01 | Phase 8 | Pending |
+| CMD-02 | Phase 8 | Pending |
+| CMD-03 | Phase 9 | Pending |
 
 **Coverage:**
-- v1 requirements: 16 total
-- Mapped to phases: 16
+- v1 requirements: 16 total, mapped to phases: 16
+- v1.1 requirements: 15 total, mapped to phases: 15
 - Unmapped: 0
 
 ---
 *Requirements defined: 2026-06-07*
-*Last updated: 2026-06-07 — traceability confirmed by roadmapper (16/16)*
+*Last updated: 2026-06-12 — v1.1 traceability added by roadmapper (15/15 mapped, Phases 5–9)*
