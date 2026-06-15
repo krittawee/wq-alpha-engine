@@ -699,20 +699,20 @@ conn.commit()
 
 ---
 
-## Open Questions
+## Open Questions (RESOLVED)
 
 1. **ACE template shapes — exact expression structure**
    - What we know: The 4 shapes are sentiment, fundamental, residual, beta. ACE repo `JediNakDev/wq-alpha-sim` has the shapes but is NOT to be cloned/imported.
    - What's unclear: The exact FastExpr template strings for each shape (operator choices, window ranges) — these need to be authored for templates.py in Phase 7.
-   - Recommendation: The planner should define the 4 template expressions as the first task (Plan 07-01: templates.py), using fields from `CLAIMED_DELAY0_FIELDS` (delay0_candidates.py) for delay-0 mode and `ARCHETYPE_HEURISTICS["sentiment_event"]` / `["value_garp"]` etc. for settings archetype hints. The templates should be concrete enough to actually run, not placeholder stubs.
+   - RESOLVED: The planner defined the 4 template expressions as the first task (Plan 07-01: templates.py), using fields from `CLAIMED_DELAY0_FIELDS` (delay0_candidates.py) for delay-0 mode and `ARCHETYPE_HEURISTICS["sentiment_event"]` / `["value_garp"]` etc. for settings archetype hints. The templates should be concrete enough to actually run, not placeholder stubs.
 
 2. **Where to run the additivity gate — per-template or end-of-run**
    - What we know: hunt.py runs it once at end-of-run over all PASS ids.
    - What's unclear: For bruteforce, running per-template means quota_count can stop the run after the first additive template. Running end-of-run means we might sim more than needed.
-   - Recommendation: Run per-template, immediately after bulk-sim survivors are collected. This enables the "stop on quota met" condition (D-07) during the template loop.
+   - RESOLVED: Run per-template, immediately after bulk-sim survivors are collected (implemented in bruteforce.py _run_template — enables quota stop mid-loop per D-07).
 
 3. **`--probe-size` vs `--probe-sample-size` naming**
-   - Minor. D-06 says `--probe-size`; align with that name.
+   - RESOLVED: `--probe-size` used throughout (bruteforce.py argparse + command file flags table).
 
 ---
 
