@@ -10,12 +10,20 @@ files_reviewed_list:
   - test_phase4.py
 findings:
   critical: 0
-  warning: 6
-  info: 4
-  total: 10
-status: issues_found
+  warning: 0
+  info: 0
+  total: 0
+status: resolved
 resolved:
-  - CR-01 (fixed in 7779719 — gate runs once per run)
+  - CR-01 (7779719 — gate runs once per run)
+  - WR-03, WR-04 (6f95be4 — proxy_drop on pairwise corr + normalize book sum)
+  - WR-05 (b619627 — block additivity on PROD_CORRELATION FAIL)
+  - WR-02 (9153fbb — surface inconclusive confirm results distinctly)
+  - WR-01 (b619627 tests — prefer scored finalists, empty-book fallback)
+  - WR-06, IN-01, IN-02, IN-03 (e9b3b69 — dead import, warning count, MIN_DAILY_RETURNS, log db_path)
+deferred:
+  - IN-04 (cross-run verdict persistence — needs DB schema; scoped to Phase 7/9 reusability, not a quality bug. CR-01 already removed per-run re-cost.)
+verified: 78 passed, 0 failed (test_phase4.py + test_selfcorr.py) on 2026-06-15
 ---
 
 # Phase 6: Code Review Report
