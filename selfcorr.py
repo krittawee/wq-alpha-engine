@@ -304,6 +304,26 @@ def get_reference_pnl_paths(conn: sqlite3.Connection) -> list:
     return [row[0] for row in rows]
 
 
+def get_book_pnl_paths(conn: sqlite3.Connection) -> list:
+    """Return pnl_path for submitted/active competition alphas only (status='ACTIVE').
+
+    Used by additivity.rank_by_proxy so the book matches the team competition score
+    (D-03). Do NOT use get_reference_pnl_paths here — that includes locally-passing
+    candidates.
+
+    Args:
+        conn: SQLite connection
+
+    Returns:
+        list of pnl_path strings for ACTIVE alphas with cached PnL
+    """
+    rows = conn.execute(
+        "SELECT pnl_path FROM alphas"
+        " WHERE pnl_path IS NOT NULL AND status='ACTIVE'"
+    ).fetchall()
+    return [row[0] for row in rows]
+
+
 def get_selfcorr_limit(conn: sqlite3.Connection) -> Optional[float]:
     """Read SELF_CORRELATION limit_val from checks table at runtime.
 
@@ -413,6 +433,33 @@ def proxy_gate(parent_alpha_id: str, conn: sqlite3.Connection) -> bool:
         return False  # graceful degrade — never block grading
 
 
+def _null_stale_pnl_paths(conn: sqlite3.Connection) -> int:
+    """Null out pnl_path in DB for any row whose cached file no longer exists on disk.
+
+    Queries all rows where pnl_path IS NOT NULL, checks Path(pnl_path).exists()
+    for each, and issues UPDATE alphas SET pnl_path=NULL for stale rows.
+    Called at the top of backfill_active_pnl so the subsequent SELECT finds
+    ACTIVE rows with missing files instead of silently skipping them (D-04 fix).
+
+    Args:
+        conn: SQLite connection
+
+    Returns:
+        count of rows whose pnl_path was nulled
+    """
+    rows = conn.execute(
+        "SELECT alpha_id, pnl_path FROM alphas WHERE pnl_path IS NOT NULL"
+    ).fetchall()
+
+    stale = [(alpha_id,) for alpha_id, pnl_path in rows if not Path(pnl_path).exists()]
+    if stale:
+        conn.executemany(
+            "UPDATE alphas SET pnl_path=NULL WHERE alpha_id=?", stale
+        )
+        conn.commit()
+    return len(stale)
+
+
 def backfill_active_pnl(
     client,
     conn: sqlite3.Connection,
@@ -436,6 +483,10 @@ def backfill_active_pnl(
     Returns:
         count of successfully fetched PnL records
     """
+    n_stale = _null_stale_pnl_paths(conn)
+    if n_stale:
+        print(f"[selfcorr] backfill: nulled {n_stale} stale pnl_path entries")
+
     rows = conn.execute(
         "SELECT alpha_id FROM alphas WHERE status='ACTIVE' AND pnl_path IS NULL"
     ).fetchall()
