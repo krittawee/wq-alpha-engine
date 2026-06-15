@@ -2,9 +2,9 @@
 gsd_state_version: 1.0
 milestone: v1.1
 milestone_name: Additive Alpha Discovery
-status: verifying
-stopped_at: Phase 5 complete (all 3 plans) — delay-0 confirmed feasible from code
-last_updated: "2026-06-15T05:27:49.490Z"
+status: ready_to_plan
+stopped_at: Phase 06 complete (3/3) — ready to discuss Phase 7
+last_updated: 2026-06-15T05:35:07.690Z
 last_activity: 2026-06-15
 progress:
   total_phases: 9
@@ -21,20 +21,20 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-07)
 
 **Core value:** Produce a decent, genuinely-submittable alpha — verified against BRAIN's own checks (never guessed) — while remembering every alpha tried so the system never repeats itself
-**Current focus:** Phase 06 — additivity-gate
+**Current focus:** Phase 7 — brute force tool (tool b)
 
 ## Current Position
 
-Phase: 06 (additivity-gate) — EXECUTING
-Plan: 3 of 3
-Status: Phase complete — ready for verification
+Phase: 7
+Plan: Not started
+Status: Ready to plan
 Last activity: 2026-06-15
 
 ## Performance Metrics
 
 **Velocity (v1.0 reference):**
 
-- Total plans completed: 21
+- Total plans completed: 24
 - Average duration: -
 - Total execution time: -
 
@@ -46,6 +46,7 @@ Last activity: 2026-06-15
 | 02 | 4 | - | - |
 | 03 | 6 | - | - |
 | 04 | 6 | - | - |
+| 06 | 3 | - | - |
 
 **Recent Trend:**
 

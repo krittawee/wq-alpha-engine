@@ -260,7 +260,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 2. Grounded Generation | 4/4 | Complete | 2026-06-08 |
 | 3. Smart Iteration | 6/6 | Complete | 2026-06-10 |
 | 4. Optimization & Polish | 6/6 | Complete | 2026-06-11 |
-| 5. Delay-0 Feasibility & Plumbing | 2/3 | In Progress|  |
+| 5. Delay-0 Feasibility & Plumbing | 3/3 | Complete   | 2026-06-13 |
 | 6. Additivity Gate | 3/3 | Complete   | 2026-06-15 |
 | 7. Brute-Force Tool (Tool B) | 0/TBD | Not started | - |
 | 8. Evolve /hunt + Fold /find-alphas | 0/TBD | Not started | - |
