@@ -9,11 +9,13 @@ files_reviewed_list:
   - hunt.py
   - test_phase4.py
 findings:
-  critical: 1
+  critical: 0
   warning: 6
   info: 4
-  total: 11
+  total: 10
 status: issues_found
+resolved:
+  - CR-01 (fixed in 7779719 — gate runs once per run)
 ---
 
 # Phase 6: Code Review Report
@@ -42,7 +44,12 @@ finalist slots, an unused import, and a docstring/behavior mismatch.
 
 ## Critical Issues
 
-### CR-01: Additivity gate re-confirms the entire accumulated PASS set every generation — uncounted BRAIN /check calls, throttle risk
+### CR-01: Additivity gate re-confirms the entire accumulated PASS set every generation — uncounted BRAIN /check calls, throttle risk  ✓ RESOLVED (7779719)
+
+> **Resolved 2026-06-15** — gate now invoked exactly once per `hunt()` run, after the
+> generation loop, bounding BRAIN `/check` calls to `CONFIRM_LIMIT` (3) total per run.
+> Regression test `test_phase6_cr01_gate_runs_once_per_run` asserts a single invocation.
+
 
 **File:** `hunt.py:313`, `hunt.py:407`, `hunt.py:124-132`
 **Issue:**
