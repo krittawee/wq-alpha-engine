@@ -5,7 +5,6 @@ Reusable by Phase 7 (brute-force) and Phase 9 (/iterate) without modification.
 """
 
 import json
-import math
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -119,19 +118,22 @@ def _combined_book_corr(candidate_path: str, ref_paths: list) -> Optional[float]
               f"(file missing or malformed) — proxy correlation based on {refs_used} reference(s)")
 
     if refs_used == 0 or not book_map:
-        print("[additivity] WARNING: zero book references available — proxy correlation is unavailable")
+        skipped_count = total_refs - refs_used
+        print(f"[additivity] WARNING: zero book references available "
+              f"({skipped_count} of {total_refs} skipped) — proxy correlation is unavailable")
         return None
 
     # Find dates present in both book_map and cand_map, sorted.
     # book_map keys are already daily-return dates (overlap[1:] from the ref loop above),
     # so overlap2 holds at most (initial_overlap - 1) entries.
-    # We need len(overlap2) >= 61 so that:
-    #   cand_rets = _pnls_to_daily_returns(61 values) → 60 daily returns
-    #   book_rets = overlap2[1:] → 60 values
-    #   n = min(60, 60) = 60 which satisfies n >= 60
+    # We need len(overlap2) >= MIN_DAILY_RETURNS + 1 so that:
+    #   cand_rets = _pnls_to_daily_returns(MIN_DAILY_RETURNS+1 values) → MIN_DAILY_RETURNS daily returns
+    #   book_rets = overlap2[1:] → MIN_DAILY_RETURNS values
+    #   n = min(MIN_DAILY_RETURNS, MIN_DAILY_RETURNS) which satisfies n >= MIN_DAILY_RETURNS
+    # (+1 is intentional: converting N+1 cumulative points yields N daily returns)
     overlap2 = sorted(d for d in book_map if d in cand_map)
 
-    if len(overlap2) < 61:
+    if len(overlap2) < selfcorr.MIN_DAILY_RETURNS + 1:
         return None
 
     # Candidate daily returns: len = len(overlap2) - 1 (Pitfall 5 off-by-one fix)
@@ -142,7 +144,7 @@ def _combined_book_corr(candidate_path: str, ref_paths: list) -> Optional[float]
     book_rets = [book_map[d] for d in overlap2[1:]]
 
     n = min(len(cand_rets), len(book_rets))
-    if n < 60:
+    if n < selfcorr.MIN_DAILY_RETURNS:
         return None
 
     return selfcorr._pearson(cand_rets[:n], book_rets[:n])

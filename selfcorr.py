@@ -26,6 +26,12 @@ import requests
 # Module-level constant for default PnL cache directory (relative to project root)
 PNL_CACHE_DIR = Path("pnl_cache")
 
+# Minimum number of daily returns required for a valid Pearson correlation.
+# Used in _date_overlap_returns (< MIN_DAILY_RETURNS) and in additivity._combined_book_corr
+# (< MIN_DAILY_RETURNS + 1 for the overlap2 pre-check — the +1 is intentional: converting
+# MIN_DAILY_RETURNS+1 cumulative PnL points yields exactly MIN_DAILY_RETURNS daily returns).
+MIN_DAILY_RETURNS = 60
+
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -159,8 +165,8 @@ def _date_overlap_returns(
     # Overlapping dates sorted
     overlap = sorted(set(map_a.keys()) & set(map_b.keys()))
 
-    if len(overlap) < 60:
-        # Less than 60 trading days overlap → skip comparison (graceful degrade D-13)
+    if len(overlap) < MIN_DAILY_RETURNS:
+        # Less than MIN_DAILY_RETURNS trading days overlap → skip (graceful degrade D-13)
         return [], []
 
     aligned_a = [map_a[d] for d in overlap]
@@ -483,6 +489,7 @@ def backfill_active_pnl(
     Returns:
         count of successfully fetched PnL records
     """
+    print(f"[selfcorr] backfill: starting PnL backfill from {db_path}")
     n_stale = _null_stale_pnl_paths(conn)
     if n_stale:
         print(f"[selfcorr] backfill: nulled {n_stale} stale pnl_path entries")
