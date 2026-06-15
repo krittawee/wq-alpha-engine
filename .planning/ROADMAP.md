@@ -227,7 +227,7 @@ Plans:
 **Wave 1** *(parallel — no dependencies between 07-01 and 07-02)*
 
 - [x] 07-01-PLAN.md — db.py bruteforce_runs schema (D-11) + insert_bruteforce_run + update_bruteforce_run CRUD + test_phase7.py scaffold with fixtures
-- [ ] 07-02-PLAN.md — templates.py: 4 ACE-inspired shapes (sentiment_rank, fundamental_value, residual_momentum, beta_neutral) + expand_slots (catalog-grounded, D-03) + probe_spread_sample (D-06) + 4 unit tests
+- [x] 07-02-PLAN.md — templates.py: 4 ACE-inspired shapes (sentiment_rank, fundamental_value, residual_momentum, beta_neutral) + expand_slots (catalog-grounded, D-03) + probe_spread_sample (D-06) + 4 unit tests
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
@@ -276,6 +276,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 4. Optimization & Polish | 6/6 | Complete | 2026-06-11 |
 | 5. Delay-0 Feasibility & Plumbing | 3/3 | Complete   | 2026-06-13 |
 | 6. Additivity Gate | 3/3 | Complete   | 2026-06-15 |
-| 7. Brute-Force Tool (Tool B) | 1/4 | In Progress|  |
+| 7. Brute-Force Tool (Tool B) | 2/4 | In Progress|  |
 | 8. Evolve /hunt + Fold /find-alphas | 0/TBD | Not started | - |
 | 9. /iterate Decorrelate Mode | 0/TBD | Not started | - |
