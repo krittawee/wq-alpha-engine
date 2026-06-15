@@ -221,7 +221,21 @@ Plans:
   4. Bulk simulation of survivors runs at concurrency ≤3, reusing the existing cached BRAIN session (no new login), and stops cleanly on quota met / session expiry (401) / dry — no combinations survive to the DB without passing the additivity gate
   5. The tool runs end-to-end with the AI (LLM) completely absent from the process — it can be invoked when the Claude Code AI quota is exhausted, using only the cached BRAIN session
 
-**Plans**: TBD
+**Plans**: 4 plans
+
+Plans:
+**Wave 1** *(parallel — no dependencies between 07-01 and 07-02)*
+
+- [ ] 07-01-PLAN.md — db.py bruteforce_runs schema (D-11) + insert_bruteforce_run + update_bruteforce_run CRUD + test_phase7.py scaffold with fixtures
+- [ ] 07-02-PLAN.md — templates.py: 4 ACE-inspired shapes (sentiment_rank, fundamental_value, residual_momentum, beta_neutral) + expand_slots (catalog-grounded, D-03) + probe_spread_sample (D-06) + 4 unit tests
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
+- [ ] 07-03-PLAN.md — bruteforce.py engine: enumerate→validate-filter→probe/abandon→quota-aware ThreadPoolExecutor bulk-sim→per-template additivity gate→401-clean-stop→failure-aggregate persistence + 5 engine tests
+
+**Wave 3** *(blocked on Wave 2 completion)*
+
+- [ ] 07-04-PLAN.md — .claude/commands/bruteforce.md command file + BF-05 static AI-free test + human-verify checkpoint (all 5 ROADMAP success criteria)
 
 ### Phase 8: Evolve /hunt + Fold /find-alphas
 
@@ -262,6 +276,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 4. Optimization & Polish | 6/6 | Complete | 2026-06-11 |
 | 5. Delay-0 Feasibility & Plumbing | 3/3 | Complete   | 2026-06-13 |
 | 6. Additivity Gate | 3/3 | Complete   | 2026-06-15 |
-| 7. Brute-Force Tool (Tool B) | 0/TBD | Not started | - |
+| 7. Brute-Force Tool (Tool B) | 0/4 | Not started | - |
 | 8. Evolve /hunt + Fold /find-alphas | 0/TBD | Not started | - |
 | 9. /iterate Decorrelate Mode | 0/TBD | Not started | - |
