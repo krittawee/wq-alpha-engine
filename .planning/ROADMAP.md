@@ -202,7 +202,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1)*
 
-- [ ] 06-02-PLAN.md — additivity.py: AdditivityResult dataclass + _combined_book_corr + rank_by_proxy (zero BRAIN calls) + confirm_additive (reads BRAIN live limit) + 9 offline tests
+- [x] 06-02-PLAN.md — additivity.py: AdditivityResult dataclass + _combined_book_corr + rank_by_proxy (zero BRAIN calls) + confirm_additive (reads BRAIN live limit) + 9 offline tests
 
 **Wave 3** *(blocked on Wave 2)*
 
@@ -261,7 +261,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 3. Smart Iteration | 6/6 | Complete | 2026-06-10 |
 | 4. Optimization & Polish | 6/6 | Complete | 2026-06-11 |
 | 5. Delay-0 Feasibility & Plumbing | 2/3 | In Progress|  |
-| 6. Additivity Gate | 1/3 | In Progress|  |
+| 6. Additivity Gate | 2/3 | In Progress|  |
 | 7. Brute-Force Tool (Tool B) | 0/TBD | Not started | - |
 | 8. Evolve /hunt + Fold /find-alphas | 0/TBD | Not started | - |
 | 9. /iterate Decorrelate Mode | 0/TBD | Not started | - |
