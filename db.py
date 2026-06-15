@@ -52,6 +52,27 @@ _DDL = [
     run_tag     TEXT
 )""",
     "CREATE INDEX IF NOT EXISTS idx_checks_history_alpha ON checks_history(alpha_id, name, checked_at)",
+    # Phase 7: bruteforce_runs — per-(run, template) failure aggregates + run params (D-11)
+    """CREATE TABLE IF NOT EXISTS bruteforce_runs (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id        TEXT NOT NULL,
+  template_name TEXT NOT NULL,
+  delay         INTEGER,
+  quota_target  INTEGER,
+  n_combos      INTEGER,
+  n_validated   INTEGER,
+  n_probed      INTEGER,
+  n_simmed      INTEGER,
+  n_survivors   INTEGER,
+  n_additive    INTEGER,
+  quota_hit     INTEGER DEFAULT 0,
+  partial       INTEGER DEFAULT 0,
+  failure_counts TEXT,
+  examples      TEXT,
+  started_at    TEXT,
+  finished_at   TEXT
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_bruteforce_runs_run ON bruteforce_runs(run_id)",
 ]
 
 # Column order for alphas INSERT OR REPLACE (matches schema definition order)
@@ -235,3 +256,56 @@ def expr_exists(
             (expression, delay),
         ).fetchone()
     return row[0] if row else None
+
+
+# ---------------------------------------------------------------------------
+# Phase 7: bruteforce_runs CRUD (D-11)
+# ---------------------------------------------------------------------------
+
+# Known columns for bruteforce_runs — used to filter caller-supplied dicts.
+_BRUTEFORCE_RUN_COLS = [
+    "run_id", "template_name", "delay", "quota_target",
+    "n_combos", "n_validated", "n_probed", "n_simmed",
+    "n_survivors", "n_additive", "quota_hit", "partial",
+    "failure_counts", "examples", "started_at", "finished_at",
+]
+
+
+def insert_bruteforce_run(conn: sqlite3.Connection, row: dict) -> int:
+    """Insert a new row into bruteforce_runs. Returns the new rowid (int).
+
+    row is a dict of column-name → value pairs; only known columns are
+    inserted (unknown keys are silently dropped). JSON serialization of
+    failure_counts/examples happens in bruteforce.py before calling here.
+    Uses plain INSERT (not INSERT OR REPLACE) — each template invocation
+    produces a distinct row, even if run_id + template_name repeat.
+    Calls conn.commit().
+    """
+    cols = [c for c in _BRUTEFORCE_RUN_COLS if c in row]
+    col_list = ", ".join(cols)
+    placeholders = ", ".join("?" for _ in cols)
+    cur = conn.execute(
+        f"INSERT INTO bruteforce_runs ({col_list}) VALUES ({placeholders})",
+        tuple(row[c] for c in cols),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def update_bruteforce_run(conn: sqlite3.Connection, rowid: int, updates: dict) -> None:
+    """Patch an existing bruteforce_runs row by its integer id.
+
+    updates is a dict of column-name → value for the columns to change;
+    only those columns are SET. Unknown keys are silently dropped.
+    Calls conn.commit().
+    """
+    cols = [c for c in _BRUTEFORCE_RUN_COLS if c in updates]
+    if not cols:
+        return
+    set_clause = ", ".join(f"{c}=?" for c in cols)
+    values = tuple(updates[c] for c in cols) + (rowid,)
+    conn.execute(
+        f"UPDATE bruteforce_runs SET {set_clause} WHERE id=?",
+        values,
+    )
+    conn.commit()
