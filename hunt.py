@@ -93,7 +93,9 @@ def _apply_additivity_gate(client, all_pass_ids: list, conn: sqlite3.Connection)
     ADD-03: No alpha is labeled best_submittable unless confirm_additive returns additive=True.
     T-06-09: additive=None (inconclusive) is treated as non-additive (strict True check).
     T-06-10: confirm_additive is called sequentially here, NEVER inside grade_many thread pool.
-    T-06-12: CONFIRM_LIMIT caps the worst-case BRAIN /check cost per run.
+    T-06-12: CONFIRM_LIMIT caps the worst-case BRAIN /check cost per run — this gate
+             is called exactly once per hunt() run, so /check calls are bounded to
+             CONFIRM_LIMIT total (not CONFIRM_LIMIT × generations).
 
     401 from confirm_additive propagates to the caller unchanged — never swallowed here.
 
@@ -310,7 +312,6 @@ def hunt(
             conn.commit()  # flush WR-05 near-status updates
             # Accumulate PASS across generations for best-of ranking
             all_pass_ids.extend(pass_ids)
-            best_submittable = _apply_additivity_gate(client, all_pass_ids, conn)
             best_near.extend(near_ids)
 
             print(
@@ -404,7 +405,13 @@ def hunt(
                         "UPDATE alphas SET status='near' WHERE alpha_id=?", (alpha_id,)
                     )
             conn.commit()  # flush final-pass near-status updates
-            best_submittable = _apply_additivity_gate(client, all_pass_ids, conn)
+
+        # CR-01: run additivity gate ONCE per hunt() run, after the generation loop
+        # completes, over the fully-accumulated all_pass_ids. Running it per-generation
+        # (old code, line 313) re-fired real BRAIN /check calls on the same PASS alphas
+        # every generation — uncounted against max_sims and a throttle/lockout risk.
+        # _apply_additivity_gate returns None immediately when all_pass_ids is empty.
+        best_submittable = _apply_additivity_gate(client, all_pass_ids, conn)
 
         # Snapshot structural diversity AFTER final generation (criterion 4)
         diversity_after = fsa.diversity_metric(conn)

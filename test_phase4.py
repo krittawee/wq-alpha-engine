@@ -2076,6 +2076,115 @@ def test_phase6_plan3_gate_passes_additive(tmp_path, conn):
 
 
 # ---------------------------------------------------------------------------
+# Phase 6 CR-01 — additivity gate runs exactly once per hunt() run
+# ---------------------------------------------------------------------------
+
+
+def test_phase6_cr01_gate_runs_once_per_run(tmp_path):
+    """CR-01 regression: _apply_additivity_gate must be called exactly once per hunt() run.
+
+    Runs hunt.hunt() across max_depth=2 generations (3 grade_many calls total:
+    Gen 0 + 2 mutation rounds) with all BRAIN/editor/DB calls mocked.
+    Asserts that _apply_additivity_gate is invoked exactly once for the entire
+    run — not once per generation (the old bug).
+    """
+    import hunt
+    import db as _db
+    from unittest.mock import MagicMock, patch, call
+
+    # Use a real tmp DB path so db.init_db is called with a string path
+    db_path = str(tmp_path / "test_cr01.db")
+
+    # grade_many returns one 'pass' result each call — ensures all_pass_ids accumulates
+    # across generations and gives the gate something to work with.
+    pass_alpha_id = "CROR01PASS"
+    near_alpha_id = "CROR01NEAR"
+
+    # Gen 0 grade result: one pass alpha
+    gen0_results = [{"alpha_id": pass_alpha_id, "status": "pass"}]
+    # Gen 1 mutation result: one near alpha (so loop continues to gen 2)
+    gen1_results = [{"alpha_id": near_alpha_id, "status": "pass"}]
+    # Gen 2 result: empty (no near → loop stops after gen 2 runs)
+    gen2_results = []
+
+    grade_returns = iter([gen0_results, gen1_results, gen2_results])
+
+    def fake_grade_many(client, conn, queue, run_id, **kwargs):
+        try:
+            return next(grade_returns)
+        except StopIteration:
+            return []
+
+    # classify_from_checks: return 'pass' for pass_alpha_id, 'near' for near_alpha_id
+    def fake_classify(alpha_id, conn):
+        if alpha_id == pass_alpha_id:
+            return ("pass", {})
+        return ("near", {})
+
+    # diagnose_and_mutate returns one mutation so loop keeps going each gen
+    mutation_expr = "rank(volume)"
+    def fake_diagnose(alpha_id, conn, avoid_motifs=None):
+        return {"mutations": [mutation_expr]}
+
+    # thesis stub
+    fake_thesis = {"archetype": "momentum", "description": "test thesis"}
+
+    # candidates from ideator
+    fake_candidates = [{"expression": mutation_expr}]
+
+    # queueable returns same list as-is (already filtered)
+    def fake_queueable(filtered):
+        return [{"expression": c["expression"]} for c in filtered]
+
+    # fsa stubs
+    fake_diversity = {"top_motif_share": 0.1}
+    fake_avoid = set()
+    def fake_filter(cands, avoid):
+        return cands
+
+    # _apply_additivity_gate mock — the key assertion target
+    mock_gate = MagicMock(return_value=None)
+
+    # _is_passable must return True so mutations reach grade_many
+    # (patch at hunt module level)
+    def fake_is_passable(conn, expr):
+        return True
+
+    with patch("hunt._apply_additivity_gate", mock_gate), \
+         patch("hunt.selfcorr.backfill_active_pnl", return_value=None), \
+         patch("hunt.researcher.build_thesis", return_value=fake_thesis), \
+         patch("hunt.ideator.generate_candidates", return_value=fake_candidates), \
+         patch("hunt.ideator.queueable", side_effect=fake_queueable), \
+         patch("hunt.fsa.filter_candidates", side_effect=fake_filter), \
+         patch("hunt.fsa.mine_frequent_motifs", return_value=fake_avoid), \
+         patch("hunt.fsa.diversity_metric", return_value=fake_diversity), \
+         patch("hunt.grade.grade_many", side_effect=fake_grade_many), \
+         patch("hunt.editor.classify_from_checks", side_effect=fake_classify), \
+         patch("hunt.editor.diagnose_and_mutate", side_effect=fake_diagnose), \
+         patch("hunt._is_passable", side_effect=fake_is_passable):
+
+        mock_client = MagicMock()
+        result = hunt.hunt(
+            mock_client,
+            db_path=db_path,
+            max_depth=2,
+            max_sims=30,
+            delay=1,
+        )
+
+    assert mock_gate.call_count == 1, (
+        f"CR-01 REGRESSION: _apply_additivity_gate must be called exactly once per "
+        f"hunt() run, but was called {mock_gate.call_count} time(s). "
+        f"Each call beyond 1 re-fires BRAIN /check on the same PASS alphas — "
+        f"uncounted against max_sims and a throttle/lockout risk."
+    )
+
+    # Sanity: result dict is well-formed
+    assert "best_submittable" in result, "hunt() must return dict with best_submittable key"
+    assert "sims_used" in result, "hunt() must return dict with sims_used key"
+
+
+# ---------------------------------------------------------------------------
 # Entry point — mirrors test_phase3.py pattern
 # ---------------------------------------------------------------------------
 
