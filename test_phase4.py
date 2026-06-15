@@ -1377,6 +1377,145 @@ def test_grade_dedup_queued_stub_inherited():
 
 
 # ---------------------------------------------------------------------------
+# Phase 6 Plan 1: selfcorr book-reference primitives
+# ---------------------------------------------------------------------------
+
+import selfcorr as _selfcorr  # noqa: E402 — used by Phase 6 Plan 1 tests below
+
+
+def test_phase6_plan1_get_book_pnl_paths_active_only(conn):
+    """get_book_pnl_paths returns only ACTIVE-status paths, never 'pass' or 'UNSUBMITTED'.
+
+    Inserts one ACTIVE alpha, one 'pass' alpha, one 'UNSUBMITTED' alpha — all with
+    pnl_path set. Asserts that get_book_pnl_paths returns exactly the ACTIVE path.
+    """
+    conn.execute(
+        "INSERT OR REPLACE INTO alphas(alpha_id, expression, status, pnl_path)"
+        " VALUES(?,?,?,?)",
+        ("ACTIVE_01", "rank(close)", "ACTIVE", "pnl_cache/ACTIVE_01.json"),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO alphas(alpha_id, expression, status, pnl_path)"
+        " VALUES(?,?,?,?)",
+        ("PASS_01", "rank(volume)", "pass", "pnl_cache/PASS_01.json"),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO alphas(alpha_id, expression, status, pnl_path)"
+        " VALUES(?,?,?,?)",
+        ("UNSUB_01", "rank(vwap)", "UNSUBMITTED", "pnl_cache/UNSUB_01.json"),
+    )
+    conn.commit()
+
+    paths = _selfcorr.get_book_pnl_paths(conn)
+
+    assert paths == ["pnl_cache/ACTIVE_01.json"], (
+        f"Phase6Plan1 FAIL: get_book_pnl_paths returned {paths!r}; "
+        f"expected only the ACTIVE path. Must never include 'pass' or 'UNSUBMITTED' rows."
+    )
+
+
+def test_phase6_plan1_get_book_pnl_paths_none_when_empty(conn):
+    """get_book_pnl_paths returns [] when the DB has no ACTIVE alphas with pnl_path set."""
+    paths = _selfcorr.get_book_pnl_paths(conn)
+
+    assert paths == [], (
+        f"Phase6Plan1 FAIL: get_book_pnl_paths on empty DB returned {paths!r}; expected []."
+    )
+
+
+def test_phase6_plan1_null_stale_pnl_paths(conn):
+    """_null_stale_pnl_paths nulls pnl_path for files that no longer exist on disk.
+
+    Inserts two ACTIVE alphas with pnl_path pointing to non-existent files.
+    Asserts _null_stale_pnl_paths returns 2 and both rows are NULL in DB.
+    """
+    conn.execute(
+        "INSERT OR REPLACE INTO alphas(alpha_id, expression, status, pnl_path)"
+        " VALUES(?,?,?,?)",
+        ("ACT_STALE_01", "rank(close)", "ACTIVE", "/nonexistent/path/ACT_STALE_01.json"),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO alphas(alpha_id, expression, status, pnl_path)"
+        " VALUES(?,?,?,?)",
+        ("ACT_STALE_02", "rank(volume)", "ACTIVE", "/nonexistent/path/ACT_STALE_02.json"),
+    )
+    conn.commit()
+
+    count = _selfcorr._null_stale_pnl_paths(conn)
+
+    assert count == 2, (
+        f"Phase6Plan1 FAIL: _null_stale_pnl_paths returned {count}; "
+        f"expected 2 (both paths are non-existent on disk)."
+    )
+
+    for alpha_id in ("ACT_STALE_01", "ACT_STALE_02"):
+        row = conn.execute(
+            "SELECT pnl_path FROM alphas WHERE alpha_id=?", (alpha_id,)
+        ).fetchone()
+        assert row is not None, f"Row for {alpha_id} missing after _null_stale_pnl_paths"
+        assert row[0] is None, (
+            f"Phase6Plan1 FAIL: pnl_path for {alpha_id} is {row[0]!r} after _null_stale_pnl_paths; "
+            f"expected NULL (file does not exist on disk)."
+        )
+
+
+def test_phase6_plan1_backfill_nulls_stale_before_fetch(tmp_path):
+    """backfill_active_pnl calls _null_stale_pnl_paths first, then fetches newly-NULLed rows.
+
+    Sets up an in-memory DB with one ACTIVE alpha whose pnl_path points to a
+    non-existent file. Mocks client.get_pnl to return synthetic PnL JSON.
+    After backfill_active_pnl:
+      - pnl_path must be re-set (not NULL) — proves the row was found because
+        _null_stale_pnl_paths cleared the stale path first.
+      - client.get_pnl must have been called exactly once.
+    """
+    from unittest.mock import MagicMock
+
+    conn = db.init_db(":memory:")
+    conn.execute(
+        "INSERT OR REPLACE INTO alphas(alpha_id, expression, status, pnl_path)"
+        " VALUES(?,?,?,?)",
+        (
+            "BACKFILL_01",
+            "rank(close)",
+            "ACTIVE",
+            "/nonexistent/stale/BACKFILL_01.json",  # file does not exist
+        ),
+    )
+    conn.commit()
+
+    # Synthetic PnL in schema+records format (matches _parse_pnl_response)
+    mock_client = MagicMock()
+    mock_client.get_pnl.return_value = {
+        "schema": {"name": ["date", "pnl"]},
+        "records": [
+            ["2024-01-02", 100.0],
+            ["2024-01-03", 101.0],
+            ["2024-01-04", 102.0],
+        ],
+    }
+
+    pnl_dir = str(tmp_path / "pnl_cache")
+    _selfcorr.backfill_active_pnl(mock_client, conn, db_path=":memory:", pnl_dir=pnl_dir)
+
+    # client.get_pnl must have been called exactly once (for BACKFILL_01)
+    mock_client.get_pnl.assert_called_once_with("BACKFILL_01")
+
+    # pnl_path must be set (not NULL) — proves the row was re-fetched
+    row = conn.execute(
+        "SELECT pnl_path FROM alphas WHERE alpha_id='BACKFILL_01'"
+    ).fetchone()
+    assert row is not None, "Row for BACKFILL_01 missing after backfill_active_pnl"
+    assert row[0] is not None, (
+        "Phase6Plan1 FAIL: pnl_path is still NULL after backfill_active_pnl — "
+        "_null_stale_pnl_paths was not called first, so the stale path was never cleared "
+        "and the SELECT found zero rows to backfill."
+    )
+
+    conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Entry point — mirrors test_phase3.py pattern
 # ---------------------------------------------------------------------------
 
