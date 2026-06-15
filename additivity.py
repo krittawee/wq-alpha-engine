@@ -122,14 +122,20 @@ def _combined_book_corr(candidate_path: str, ref_paths: list) -> Optional[float]
         print("[additivity] WARNING: zero book references available — proxy correlation is unavailable")
         return None
 
-    # Find dates present in both book_map and cand_map, sorted
+    # Find dates present in both book_map and cand_map, sorted.
+    # book_map keys are already daily-return dates (overlap[1:] from the ref loop above),
+    # so overlap2 holds at most (initial_overlap - 1) entries.
+    # We need len(overlap2) >= 61 so that:
+    #   cand_rets = _pnls_to_daily_returns(61 values) → 60 daily returns
+    #   book_rets = overlap2[1:] → 60 values
+    #   n = min(60, 60) = 60 which satisfies n >= 60
     overlap2 = sorted(d for d in book_map if d in cand_map)
 
-    # Need at least 62 cumulative points to get 61 daily returns (≥ 60 trading days minimum)
-    if len(overlap2) < 62:
+    if len(overlap2) < 61:
         return None
 
     # Candidate daily returns: len = len(overlap2) - 1 (Pitfall 5 off-by-one fix)
+    # Taking cumulative PnL on overlap2 dates → daily returns covers overlap2[1:] implicitly
     cand_rets = selfcorr._pnls_to_daily_returns([cand_map[d] for d in overlap2])
 
     # Book daily returns on overlap2[1:] (skip first date — no predecessor in book series)

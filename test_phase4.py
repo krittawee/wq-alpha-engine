@@ -1516,6 +1516,435 @@ def test_phase6_plan1_backfill_nulls_stale_before_fetch(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Phase 6 Plan 2 — additivity.py offline tests (nine tests)
+# No BRAIN API calls. Uses in-memory SQLite and tmp_path PnL fixtures.
+# ---------------------------------------------------------------------------
+
+try:
+    import additivity as _additivity
+except ImportError:
+    _additivity = None  # type: ignore
+
+import json as _json
+import datetime as _datetime
+
+
+def _make_pnl_file(path, n_dates=100, start="2022-01-01", pnl_factor=1.0):
+    """Write a PnL JSON fixture. dates are consecutive calendar days.
+
+    Uses a sine-wave-shaped cumulative PnL so daily returns (differences) are
+    non-constant — this is required for a valid Pearson correlation (zero-std
+    series yields 0.0 from selfcorr._pearson regardless of similarity).
+
+    Args:
+        path: pathlib.Path where file is written
+        n_dates: number of date entries
+        start: ISO date string for first date
+        pnl_factor: scaling multiplier applied to the sine-wave PnL series
+    """
+    import math as _math
+    start_date = _datetime.date.fromisoformat(start)
+    dates = [(start_date + _datetime.timedelta(days=i)).isoformat() for i in range(n_dates)]
+    # Sine-wave cumulative PnL: non-constant → non-zero std daily returns
+    pnls = [_math.sin(i * 0.2) * 100.0 * pnl_factor for i in range(n_dates)]
+    path.write_text(_json.dumps({"dates": dates, "pnls": pnls}))
+
+
+def test_phase6_plan2_combined_book_corr_correct_alignment(tmp_path):
+    """_combined_book_corr returns ~1.0 when candidate and book PnL are identical."""
+    if _additivity is None:
+        import pytest; pytest.skip("additivity module not available")
+
+    cand_path = tmp_path / "cand.json"
+    book_path = tmp_path / "book.json"
+    _make_pnl_file(cand_path, n_dates=100)
+    _make_pnl_file(book_path, n_dates=100)  # identical series
+
+    result = _additivity._combined_book_corr(str(cand_path), [str(book_path)])
+
+    assert result is not None, (
+        "Phase6Plan2 FAIL: _combined_book_corr returned None for identical PnL series; expected ~1.0"
+    )
+    assert abs(result - 1.0) < 0.01, (
+        f"Phase6Plan2 FAIL: _combined_book_corr={result:.4f}; expected ~1.0 for identical series"
+    )
+
+
+def test_phase6_plan2_combined_book_corr_date_off_by_one(tmp_path):
+    """_combined_book_corr produces a valid float (not None) with 62 dates; series lengths are 61."""
+    if _additivity is None:
+        import pytest; pytest.skip("additivity module not available")
+
+    cand_path = tmp_path / "cand62.json"
+    book_path = tmp_path / "book62.json"
+    # Candidate: 62 dates, linear PnL
+    _make_pnl_file(cand_path, n_dates=62, pnl_factor=1.0)
+    # Book: same 62 dates, different PnL slope (pnl[i] = i * 2)
+    _make_pnl_file(book_path, n_dates=62, pnl_factor=2.0)
+
+    result = _additivity._combined_book_corr(str(cand_path), [str(book_path)])
+
+    # Result must be a float in [-1, 1] — not None — proving 62 dates → 61 daily returns ≥ 60
+    assert result is not None, (
+        "Phase6Plan2 FAIL: _combined_book_corr returned None for 62-date overlap; "
+        "expected float (62 dates → 61 daily returns, satisfying n >= 60 minimum)"
+    )
+    assert isinstance(result, float), f"Phase6Plan2 FAIL: result is {type(result)}, expected float"
+    assert -1.0 <= result <= 1.0, (
+        f"Phase6Plan2 FAIL: result {result} outside [-1, 1]"
+    )
+
+
+def test_phase6_plan2_combined_book_corr_insufficient_overlap(tmp_path):
+    """_combined_book_corr returns None when candidate and book have no date overlap."""
+    if _additivity is None:
+        import pytest; pytest.skip("additivity module not available")
+
+    # Candidate: 50 dates starting 2022-01-01
+    cand_path = tmp_path / "cand_no_overlap.json"
+    _make_pnl_file(cand_path, n_dates=50, start="2022-01-01")
+
+    # Book: 50 DIFFERENT dates (no overlap with candidate)
+    book_path = tmp_path / "book_no_overlap.json"
+    _make_pnl_file(book_path, n_dates=50, start="2023-06-01")
+
+    result = _additivity._combined_book_corr(str(cand_path), [str(book_path)])
+
+    assert result is None, (
+        f"Phase6Plan2 FAIL: _combined_book_corr returned {result}; "
+        f"expected None when candidate and book have zero date overlap"
+    )
+
+
+def test_phase6_plan2_rank_by_proxy_zero_brain_calls(tmp_path, conn):
+    """rank_by_proxy makes zero BRAIN API calls — only local PnL reads and SQLite queries."""
+    if _additivity is None:
+        import pytest; pytest.skip("additivity module not available")
+
+    from unittest.mock import patch, MagicMock
+
+    # Write two book PnL files for ACTIVE alphas
+    book1 = tmp_path / "ACTIVE_RBP_01.json"
+    book2 = tmp_path / "ACTIVE_RBP_02.json"
+    _make_pnl_file(book1, n_dates=100)
+    _make_pnl_file(book2, n_dates=100, pnl_factor=1.5)
+
+    # Insert ACTIVE rows pointing to those files
+    conn.execute(
+        "INSERT OR REPLACE INTO alphas(alpha_id, expression, status, pnl_path) VALUES(?,?,?,?)",
+        ("ACTIVE_RBP_01", "rank(close)", "ACTIVE", str(book1)),
+    )
+    conn.execute(
+        "INSERT OR REPLACE INTO alphas(alpha_id, expression, status, pnl_path) VALUES(?,?,?,?)",
+        ("ACTIVE_RBP_02", "rank(volume)", "ACTIVE", str(book2)),
+    )
+    conn.commit()
+
+    # Write two candidate PnL files
+    cand1 = tmp_path / "CAND_RBP_01.json"
+    cand2 = tmp_path / "CAND_RBP_02.json"
+    _make_pnl_file(cand1, n_dates=100, pnl_factor=0.9)
+    _make_pnl_file(cand2, n_dates=100, pnl_factor=1.1)
+
+    candidates = [
+        {"alpha_id": "CAND_RBP_01", "pnl_path": str(cand1)},
+        {"alpha_id": "CAND_RBP_02", "pnl_path": str(cand2)},
+    ]
+
+    import requests
+
+    with patch.object(requests.Session, "get", side_effect=AssertionError("BRAIN HTTP call made in rank_by_proxy!")) as mock_get:
+        with patch("selfcorr.get_selfcorr_limit", return_value=0.7):
+            result = _additivity.rank_by_proxy(candidates, conn)
+
+        # Should NOT have raised — mock_get never called
+        mock_get.assert_not_called()
+
+    assert isinstance(result, list), f"Phase6Plan2 FAIL: rank_by_proxy returned {type(result)}"
+    assert len(result) == 2, f"Phase6Plan2 FAIL: expected 2 results, got {len(result)}"
+    for r in result:
+        assert isinstance(r, _additivity.AdditivityResult), (
+            f"Phase6Plan2 FAIL: result item is {type(r)}, expected AdditivityResult"
+        )
+
+
+def test_phase6_plan2_rank_by_proxy_sort_ascending(tmp_path, conn):
+    """rank_by_proxy returns candidates sorted ascending by combined_corr (most additive first)."""
+    if _additivity is None:
+        import pytest; pytest.skip("additivity module not available")
+
+    from unittest.mock import patch
+
+    # Write book PnL (linear, factor=1)
+    book_path = tmp_path / "ACTIVE_SORT_01.json"
+    _make_pnl_file(book_path, n_dates=100, pnl_factor=1.0)
+
+    conn.execute(
+        "INSERT OR REPLACE INTO alphas(alpha_id, expression, status, pnl_path) VALUES(?,?,?,?)",
+        ("ACTIVE_SORT_01", "rank(close)", "ACTIVE", str(book_path)),
+    )
+    conn.commit()
+
+    # Candidate A: pnl_factor=1.0 → daily returns identical to book → combined_corr ≈ 1.0 (high, bad)
+    cand_a = tmp_path / "CAND_A.json"
+    _make_pnl_file(cand_a, n_dates=100, pnl_factor=1.0)
+
+    # Candidate B: pnl_factor=-1.0 → daily returns opposite to book → combined_corr ≈ -1.0 (low, additive)
+    cand_b = tmp_path / "CAND_B.json"
+    _make_pnl_file(cand_b, n_dates=100, pnl_factor=-1.0)
+
+    candidates = [
+        {"alpha_id": "CAND_A", "pnl_path": str(cand_a)},
+        {"alpha_id": "CAND_B", "pnl_path": str(cand_b)},
+    ]
+
+    with patch("selfcorr.get_selfcorr_limit", return_value=0.7):
+        result = _additivity.rank_by_proxy(candidates, conn)
+
+    assert len(result) == 2, f"Phase6Plan2 FAIL: expected 2 results, got {len(result)}"
+
+    # B (additive, lower combined_corr) must come first
+    assert result[0].alpha_id == "CAND_B", (
+        f"Phase6Plan2 FAIL: expected CAND_B first (most additive / lowest combined_corr), "
+        f"got {result[0].alpha_id} (combined_corr={result[0].combined_corr})"
+    )
+    assert result[1].alpha_id == "CAND_A", (
+        f"Phase6Plan2 FAIL: expected CAND_A second (highest combined_corr), "
+        f"got {result[1].alpha_id}"
+    )
+    # Verify ordering invariant
+    assert result[0].combined_corr <= result[1].combined_corr, (
+        f"Phase6Plan2 FAIL: not sorted ascending: {result[0].combined_corr} > {result[1].combined_corr}"
+    )
+
+
+def test_phase6_plan2_soft_prefilter_margin(tmp_path, conn):
+    """proxy_drop is True only when combined_corr > limit + PROXY_MARGIN; False when limit is None."""
+    if _additivity is None:
+        import pytest; pytest.skip("additivity module not available")
+
+    from unittest.mock import patch, MagicMock
+
+    # Write a book alpha (100 dates, linear)
+    book_path = tmp_path / "ACTIVE_FILT.json"
+    _make_pnl_file(book_path, n_dates=100, pnl_factor=1.0)
+    conn.execute(
+        "INSERT OR REPLACE INTO alphas(alpha_id, expression, status, pnl_path) VALUES(?,?,?,?)",
+        ("ACTIVE_FILT", "rank(close)", "ACTIVE", str(book_path)),
+    )
+    conn.commit()
+
+    MARGIN = _additivity.PROXY_MARGIN  # 0.05
+    LIMIT = 0.7  # simulated DB limit
+
+    # We need _combined_book_corr to return specific values for testing.
+    # Patch it directly so we can control the combined_corr value.
+
+    # Case 1: combined_corr = 0.78 (> 0.7 + 0.05 = 0.75) → proxy_drop = True
+    cand1 = tmp_path / "CAND_FILT1.json"
+    _make_pnl_file(cand1, n_dates=100, pnl_factor=1.0)
+    with patch("selfcorr.get_selfcorr_limit", return_value=LIMIT), \
+         patch.object(_additivity, "_combined_book_corr", return_value=0.78):
+        r = _additivity.rank_by_proxy([{"alpha_id": "CAND_FILT1", "pnl_path": str(cand1)}], conn)
+    assert r[0].proxy_drop is True, (
+        f"Phase6Plan2 FAIL: combined_corr=0.78, limit=0.7, margin=0.05 → expected proxy_drop=True, "
+        f"got {r[0].proxy_drop}"
+    )
+
+    # Case 2: combined_corr = 0.72 (< 0.75) → proxy_drop = False
+    cand2 = tmp_path / "CAND_FILT2.json"
+    _make_pnl_file(cand2, n_dates=100, pnl_factor=1.0)
+    with patch("selfcorr.get_selfcorr_limit", return_value=LIMIT), \
+         patch.object(_additivity, "_combined_book_corr", return_value=0.72):
+        r = _additivity.rank_by_proxy([{"alpha_id": "CAND_FILT2", "pnl_path": str(cand2)}], conn)
+    assert r[0].proxy_drop is False, (
+        f"Phase6Plan2 FAIL: combined_corr=0.72 < 0.75 (limit+margin) → expected proxy_drop=False, "
+        f"got {r[0].proxy_drop}"
+    )
+
+    # Case 3: combined_corr = 0.78 but limit = None → proxy_drop = False (never drop without limit)
+    cand3 = tmp_path / "CAND_FILT3.json"
+    _make_pnl_file(cand3, n_dates=100, pnl_factor=1.0)
+    with patch("selfcorr.get_selfcorr_limit", return_value=None), \
+         patch.object(_additivity, "_combined_book_corr", return_value=0.78):
+        r = _additivity.rank_by_proxy([{"alpha_id": "CAND_FILT3", "pnl_path": str(cand3)}], conn)
+    assert r[0].proxy_drop is False, (
+        f"Phase6Plan2 FAIL: limit=None → expected proxy_drop=False (never drop without limit), "
+        f"got {r[0].proxy_drop}"
+    )
+
+
+def test_phase6_plan2_missing_pnl_skipped_last(tmp_path, conn):
+    """Candidates with pnl_path=None are ranked last with skipped=True."""
+    if _additivity is None:
+        import pytest; pytest.skip("additivity module not available")
+
+    from unittest.mock import patch
+
+    # Book alpha
+    book_path = tmp_path / "ACTIVE_SKIP.json"
+    _make_pnl_file(book_path, n_dates=100, pnl_factor=1.0)
+    conn.execute(
+        "INSERT OR REPLACE INTO alphas(alpha_id, expression, status, pnl_path) VALUES(?,?,?,?)",
+        ("ACTIVE_SKIP", "rank(close)", "ACTIVE", str(book_path)),
+    )
+    conn.commit()
+
+    # Candidate A: valid pnl_path
+    cand_a = tmp_path / "CAND_SKIP_A.json"
+    _make_pnl_file(cand_a, n_dates=100, pnl_factor=0.5)
+
+    # Candidate B: pnl_path=None (no PnL — should be skipped and ranked last)
+    # Candidate C: valid pnl_path
+    cand_c = tmp_path / "CAND_SKIP_C.json"
+    _make_pnl_file(cand_c, n_dates=100, pnl_factor=1.5)
+
+    candidates = [
+        {"alpha_id": "CAND_SKIP_A", "pnl_path": str(cand_a)},
+        {"alpha_id": "CAND_SKIP_B", "pnl_path": None},
+        {"alpha_id": "CAND_SKIP_C", "pnl_path": str(cand_c)},
+    ]
+
+    with patch("selfcorr.get_selfcorr_limit", return_value=0.7):
+        result = _additivity.rank_by_proxy(candidates, conn)
+
+    assert len(result) == 3, f"Phase6Plan2 FAIL: expected 3 results, got {len(result)}"
+
+    # Last result must be skipped candidate B
+    last = result[-1]
+    assert last.alpha_id == "CAND_SKIP_B", (
+        f"Phase6Plan2 FAIL: expected CAND_SKIP_B last (skipped), got {last.alpha_id}"
+    )
+    assert last.skipped is True, (
+        f"Phase6Plan2 FAIL: CAND_SKIP_B.skipped should be True, got {last.skipped}"
+    )
+    assert last.proxy_drop is False, (
+        f"Phase6Plan2 FAIL: skipped candidates must have proxy_drop=False, got {last.proxy_drop}"
+    )
+
+    # First two must not be skipped
+    for r in result[:2]:
+        assert r.skipped is False, (
+            f"Phase6Plan2 FAIL: {r.alpha_id} should not be skipped"
+        )
+
+
+def test_phase6_plan2_confirm_additive_pass(tmp_path, conn):
+    """confirm_additive returns additive=True and reads brain_self_corr_limit from response."""
+    if _additivity is None:
+        import pytest; pytest.skip("additivity module not available")
+
+    from unittest.mock import MagicMock, patch
+
+    alpha_id = "CONFIRM_PASS_01"
+    # Insert alpha row so pnl_path lookup works
+    pnl_path = str(tmp_path / f"{alpha_id}.json")
+    _make_pnl_file(tmp_path / f"{alpha_id}.json", n_dates=100)
+    conn.execute(
+        "INSERT OR REPLACE INTO alphas(alpha_id, expression, status, pnl_path) VALUES(?,?,?,?)",
+        (alpha_id, "rank(close)", "pass", pnl_path),
+    )
+    conn.commit()
+
+    mock_client = MagicMock()
+    mock_corr_response = {
+        "SELF_CORRELATION": {
+            "name": "SELF_CORRELATION",
+            "result": "PASS",
+            "value": 0.35,
+            "limit": 0.7,   # from response, not hardcoded
+        },
+        "PROD_CORRELATION": {
+            "name": "PROD_CORRELATION",
+            "result": "PASS",
+            "value": 0.20,
+            "limit": 0.7,
+        },
+    }
+
+    with patch("grade.trigger_correlation_check") as mock_trigger, \
+         patch("grade.poll_correlation", return_value=mock_corr_response) as mock_poll:
+
+        result = _additivity.confirm_additive(mock_client, alpha_id, conn)
+
+        mock_trigger.assert_called_once_with(mock_client, alpha_id)
+        mock_poll.assert_called_once()
+
+    assert result.additive is True, (
+        f"Phase6Plan2 FAIL: expected additive=True (SELF_CORRELATION PASS), got {result.additive}"
+    )
+    assert result.brain_self_corr_limit == 0.7, (
+        f"Phase6Plan2 FAIL: brain_self_corr_limit={result.brain_self_corr_limit}; "
+        f"expected 0.7 (read from mock response, not hardcoded)"
+    )
+    assert result.brain_self_corr == 0.35, (
+        f"Phase6Plan2 FAIL: brain_self_corr={result.brain_self_corr}; expected 0.35"
+    )
+    assert result.brain_prod_corr == 0.20, (
+        f"Phase6Plan2 FAIL: brain_prod_corr={result.brain_prod_corr}; expected 0.20"
+    )
+
+
+def test_phase6_plan2_confirm_additive_fail_and_no_hardcode(tmp_path, conn):
+    """confirm_additive returns additive=False on FAIL; brain_self_corr_limit reads live limit (not 0.7 hardcode)."""
+    if _additivity is None:
+        import pytest; pytest.skip("additivity module not available")
+
+    from unittest.mock import MagicMock, patch
+    import subprocess
+    import os
+
+    alpha_id = "CONFIRM_FAIL_01"
+    conn.execute(
+        "INSERT OR REPLACE INTO alphas(alpha_id, expression, status, pnl_path) VALUES(?,?,?,?)",
+        (alpha_id, "rank(close)", "pass", None),
+    )
+    conn.commit()
+
+    mock_client = MagicMock()
+    # Use a different limit (0.65) to prove the code reads from response, not hardcodes 0.7
+    mock_corr_response = {
+        "SELF_CORRELATION": {
+            "name": "SELF_CORRELATION",
+            "result": "FAIL",
+            "value": 0.82,
+            "limit": 0.65,  # NOT 0.7 — proves no hardcode
+        },
+    }
+
+    with patch("grade.trigger_correlation_check"), \
+         patch("grade.poll_correlation", return_value=mock_corr_response):
+
+        result = _additivity.confirm_additive(mock_client, alpha_id, conn)
+
+    assert result.additive is False, (
+        f"Phase6Plan2 FAIL: expected additive=False (SELF_CORRELATION FAIL), got {result.additive}"
+    )
+    assert result.brain_self_corr_limit == 0.65, (
+        f"Phase6Plan2 FAIL: brain_self_corr_limit={result.brain_self_corr_limit}; "
+        f"expected 0.65 (from mock response). If this is 0.7, the code is hardcoding 0.7."
+    )
+
+    # Verify no literal "0.7" appears in additivity.py function bodies
+    additivity_path = os.path.join(os.path.dirname(__file__), "additivity.py")
+    with open(additivity_path) as f:
+        source = f.read()
+    # Strip comments and docstrings is complex; instead we check that the file
+    # has no "= 0.7" or "== 0.7" or "> 0.7" or "< 0.7" patterns in function bodies.
+    # The only allowed occurrence is in string literals (comments/docstrings).
+    import re
+    # Find occurrences of 0.7 that are NOT inside a comment/docstring line
+    non_comment_lines = [
+        (i + 1, line) for i, line in enumerate(source.splitlines())
+        if "0.7" in line and not line.lstrip().startswith("#") and "\"\"\"" not in line and "'''" not in line
+    ]
+    assert not non_comment_lines, (
+        f"Phase6Plan2 FAIL: additivity.py contains hardcoded 0.7 outside comments/docstrings: "
+        f"{non_comment_lines}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Entry point — mirrors test_phase3.py pattern
 # ---------------------------------------------------------------------------
 
