@@ -150,3 +150,180 @@ def test_bruteforce_runs_schema(fresh_db):
     assert updated[0] == 3, "n_additive should be patched to 3"
     assert updated[1] == "2026-01-01T01:00:00", "finished_at should be set"
     assert updated[2] == 200, "n_combos should be unchanged after update"
+
+
+# ---------------------------------------------------------------------------
+# BF-01 / BF-02 tests (Plan 07-02: templates.py)
+# ---------------------------------------------------------------------------
+
+
+def test_template_enumeration():
+    """BF-01: expand_slots with literal slots produces expected cartesian product.
+
+    beta_neutral has 2 field literals x 3 window literals = 6 combos.
+    Verifies combo count, expression completeness, and tuple shape.
+    """
+    import templates
+
+    conn = db.init_db(":memory:")
+    try:
+        beta = next(t for t in templates.TEMPLATES if t["name"] == "beta_neutral")
+        combos = templates.expand_slots(conn, beta)
+
+        # 2 field values x 3 window values = 6 combos
+        assert len(combos) == 6, (
+            f"beta_neutral should expand to 6 combos (2 fields x 3 windows), got {len(combos)}"
+        )
+
+        for combo in combos:
+            # Each combo is a (str, dict) tuple
+            assert isinstance(combo, tuple) and len(combo) == 2, (
+                f"combo should be a 2-tuple, got {type(combo)} of len {len(combo)}: {combo!r}"
+            )
+            expr, slot_dict = combo
+            assert isinstance(expr, str), f"first element must be str, got {type(expr)}"
+            assert isinstance(slot_dict, dict), f"second element must be dict, got {type(slot_dict)}"
+
+            # No unfilled placeholders remain in the expression
+            assert "{" not in expr, (
+                f"Unfilled placeholder still present in expression: {expr!r}"
+            )
+
+        # Verify both field values appear in the expansions
+        exprs = [c[0] for c in combos]
+        assert any("volume" in e for e in exprs), "field value 'volume' missing from combos"
+        assert any("vwap" in e for e in exprs), "field value 'vwap' missing from combos"
+    finally:
+        conn.close()
+
+
+def test_slot_expansion():
+    """BF-01: expand_slots catalog-filter path queries datafields with type/dataset filter.
+
+    Inserts 2 VECTOR rows and 1 MATRIX row with dataset='nws12'.
+    Asserts: only VECTOR ids appear in expanded sentiment_rank expressions.
+    Asserts: empty DB returns 0 combos (no error).
+    """
+    import templates
+
+    # Case 1: empty DB -> 0 combos
+    conn_empty = db.init_db(":memory:")
+    try:
+        sentiment = next(t for t in templates.TEMPLATES if t["name"] == "sentiment_rank")
+        combos_empty = templates.expand_slots(conn_empty, sentiment)
+        assert len(combos_empty) == 0, (
+            f"Empty datafields should yield 0 combos, got {len(combos_empty)}"
+        )
+    finally:
+        conn_empty.close()
+
+    # Case 2: DB with 2 VECTOR rows and 1 MATRIX row for nws12
+    conn = db.init_db(":memory:")
+    try:
+        # Insert 2 VECTOR fields and 1 MATRIX field, all dataset='nws12'
+        conn.executemany(
+            "INSERT OR IGNORE INTO datafields (id, description, dataset, region, universe, delay, type)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [
+                ("nws12_vec_a", "VECTOR field A", "nws12", "USA", "TOP3000", 0, "VECTOR"),
+                ("nws12_vec_b", "VECTOR field B", "nws12", "USA", "TOP3000", 0, "VECTOR"),
+                ("nws12_mat_c", "MATRIX field C", "nws12", "USA", "TOP3000", 0, "MATRIX"),
+            ],
+        )
+        conn.commit()
+
+        combos = templates.expand_slots(conn, sentiment)
+
+        # 3 window values x 2 VECTOR fields = 6 combos
+        assert len(combos) > 0, "Expected combos from 2 VECTOR fields x 3 windows"
+        assert len(combos) == 6, (
+            f"Expected 6 combos (2 VECTOR fields x 3 windows), got {len(combos)}"
+        )
+
+        # Only VECTOR field ids (not nws12_mat_c) appear in expressions
+        exprs = [c[0] for c in combos]
+        assert all("nws12_mat_c" not in e for e in exprs), (
+            "MATRIX field 'nws12_mat_c' should not appear in VECTOR-filtered expansion"
+        )
+        assert any("nws12_vec_a" in e for e in exprs), (
+            "VECTOR field 'nws12_vec_a' should appear in expansion"
+        )
+        assert any("nws12_vec_b" in e for e in exprs), (
+            "VECTOR field 'nws12_vec_b' should appear in expansion"
+        )
+    finally:
+        conn.close()
+
+
+def test_validate_gate():
+    """BF-02: validate gate contract -- combos with validate returning False are filtered out.
+
+    Uses unittest.mock.patch to stub validate.validate to always return (False, 'bad token').
+    Simulates the filtering logic Plan 07-03 MUST implement (every combo checked before sim).
+    Asserts: 0 combos pass through when validate always fails.
+    """
+    import templates
+    import unittest.mock
+
+    # Build a small list of 3 synthetic combos (same shape as expand_slots output)
+    synthetic_combos = [
+        ("rank(ts_corr(volume, close, 5))", {"field": "volume", "window": "5"}),
+        ("rank(ts_corr(vwap, close, 5))",   {"field": "vwap",   "window": "5"}),
+        ("rank(ts_corr(volume, close, 10))", {"field": "volume", "window": "10"}),
+    ]
+
+    # Simulate the validate-gate pattern bruteforce.py will implement
+    with unittest.mock.patch("validate.validate", return_value=(False, "bad token")) as mock_validate:
+        import validate
+        validated_combos = [
+            combo for combo in synthetic_combos
+            if validate.validate(None, combo[0])[0]
+        ]
+
+    # All combos should be filtered out when validate always returns False
+    assert len(validated_combos) == 0, (
+        f"Expected 0 combos to pass a failing validate gate, got {len(validated_combos)}"
+    )
+    # validate was called once per combo
+    assert mock_validate.call_count == 3, (
+        f"validate should be called once per combo (3 times), called {mock_validate.call_count} times"
+    )
+
+
+def test_probe_spread_sample():
+    """BF-03: probe_spread_sample covers all distinct slot values within size limit.
+
+    Builds 9 synthetic combos (3 field values x 3 window values).
+    Asserts: result <= 5 combos; all 3 field values covered; all 3 window values covered.
+    """
+    import templates
+
+    # Build 9 combos: 3 field values x 3 window values
+    fields = ["field_a", "field_b", "field_c"]
+    windows = ["5", "10", "20"]
+    synthetic_combos = [
+        (f"rank(ts_corr({f}, close, {w}))", {"field": f, "window": w})
+        for f in fields
+        for w in windows
+    ]
+    assert len(synthetic_combos) == 9, "synthetic combos setup error"
+
+    slot_names = ["field", "window"]
+    sample = templates.probe_spread_sample(synthetic_combos, slot_names, size=5)
+
+    # Result must not exceed size
+    assert len(sample) <= 5, (
+        f"probe_spread_sample returned {len(sample)} combos, exceeds size=5"
+    )
+
+    # Greedy cover should achieve full coverage of all 3 distinct field values within 3-5 picks
+    field_vals_covered = {c[1]["field"] for c in sample}
+    assert field_vals_covered == set(fields), (
+        f"probe_spread_sample did not cover all field values: {field_vals_covered} vs {set(fields)}"
+    )
+
+    # Greedy cover should also cover all 3 distinct window values within 5 picks
+    window_vals_covered = {c[1]["window"] for c in sample}
+    assert window_vals_covered == set(windows), (
+        f"probe_spread_sample did not cover all window values: {window_vals_covered} vs {set(windows)}"
+    )
