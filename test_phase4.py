@@ -1945,6 +1945,137 @@ def test_phase6_plan2_confirm_additive_fail_and_no_hardcode(tmp_path, conn):
 
 
 # ---------------------------------------------------------------------------
+# Phase 6 Plan 3 — hunt.py additivity gate integration tests (two tests)
+# No BRAIN API calls. Uses in-memory SQLite and tmp_path PnL fixtures.
+# Patches additivity.rank_by_proxy and additivity.confirm_additive at the
+# additivity module level (hunt.py calls additivity.rank_by_proxy, so the
+# patch must be on the additivity module's attribute, not a hunt-local ref).
+# ---------------------------------------------------------------------------
+
+try:
+    from hunt import _apply_additivity_gate as _hunt_gate
+except Exception:
+    _hunt_gate = None  # type: ignore
+
+
+def test_phase6_plan3_gate_blocks_nonaddititve(tmp_path, conn):
+    """Gate withholds best_submittable when proxy_drop=True — no confirms called."""
+    if _hunt_gate is None:
+        import pytest; pytest.skip("_apply_additivity_gate not importable from hunt")
+    if _additivity is None:
+        import pytest; pytest.skip("additivity module not available")
+
+    from unittest.mock import MagicMock, patch, call
+
+    # Insert one 'pass' alpha in the in-memory DB
+    aid = "GATE_BLOCK_01"
+    pnl_file = tmp_path / f"{aid}.json"
+    pnl_file.write_text(_json.dumps({"dates": ["2022-01-03", "2022-01-04"], "pnls": [0.0, 100.0]}))
+    conn.execute(
+        "INSERT OR REPLACE INTO alphas(alpha_id, expression, status, sharpe, pnl_path) VALUES(?,?,?,?,?)",
+        (aid, "rank(close)", "pass", 1.5, str(pnl_file)),
+    )
+    conn.commit()
+
+    # rank_by_proxy returns one result with proxy_drop=True — no survivors
+    proxy_result = _additivity.AdditivityResult(
+        alpha_id=aid,
+        pnl_path=str(pnl_file),
+        combined_corr=0.85,
+        max_pairwise_corr=0.9,
+        proxy_drop=True,
+        skipped=False,
+        additive=None,
+    )
+    # confirm_additive is patched but should NOT be called for proxy_drop=True candidates
+    confirm_result = _additivity.AdditivityResult(
+        alpha_id=aid,
+        pnl_path=str(pnl_file),
+        combined_corr=None,
+        max_pairwise_corr=None,
+        proxy_drop=False,
+        skipped=False,
+        additive=False,
+    )
+
+    mock_client = MagicMock()
+
+    with patch("additivity.rank_by_proxy", return_value=[proxy_result]) as mock_rank, \
+         patch("additivity.confirm_additive", return_value=confirm_result) as mock_confirm:
+
+        result = _hunt_gate(mock_client, [aid], conn)
+
+    assert result is None, (
+        f"Phase6Plan3 FAIL: gate should return None when proxy_drop=True (no survivors), "
+        f"got {result!r}"
+    )
+    mock_rank.assert_called_once()
+    assert mock_confirm.call_count == 0, (
+        f"Phase6Plan3 FAIL: confirm_additive should NOT be called for proxy_drop=True candidates, "
+        f"was called {mock_confirm.call_count} time(s)"
+    )
+
+
+def test_phase6_plan3_gate_passes_additive(tmp_path, conn):
+    """Gate returns the alpha_id when proxy_drop=False and confirm_additive returns additive=True."""
+    if _hunt_gate is None:
+        import pytest; pytest.skip("_apply_additivity_gate not importable from hunt")
+    if _additivity is None:
+        import pytest; pytest.skip("additivity module not available")
+
+    from unittest.mock import MagicMock, patch
+
+    # Insert one 'pass' alpha
+    aid = "GATE_PASS_01"
+    pnl_file = tmp_path / f"{aid}.json"
+    pnl_file.write_text(_json.dumps({"dates": ["2022-01-03", "2022-01-04"], "pnls": [0.0, 100.0]}))
+    conn.execute(
+        "INSERT OR REPLACE INTO alphas(alpha_id, expression, status, sharpe, pnl_path) VALUES(?,?,?,?,?)",
+        (aid, "rank(close)", "pass", 1.8, str(pnl_file)),
+    )
+    conn.commit()
+
+    # rank_by_proxy returns one result with proxy_drop=False — it is a survivor
+    proxy_result = _additivity.AdditivityResult(
+        alpha_id=aid,
+        pnl_path=str(pnl_file),
+        combined_corr=0.15,
+        max_pairwise_corr=0.20,
+        proxy_drop=False,
+        skipped=False,
+    )
+    # confirm_additive returns additive=True → gate should pass the alpha through
+    confirm_result = _additivity.AdditivityResult(
+        alpha_id=aid,
+        pnl_path=str(pnl_file),
+        combined_corr=None,
+        max_pairwise_corr=None,
+        proxy_drop=False,
+        skipped=False,
+        additive=True,
+    )
+
+    mock_client = MagicMock()
+
+    with patch("additivity.rank_by_proxy", return_value=[proxy_result]) as mock_rank, \
+         patch("additivity.confirm_additive", return_value=confirm_result) as mock_confirm:
+
+        result = _hunt_gate(mock_client, [aid], conn)
+
+    assert result == aid, (
+        f"Phase6Plan3 FAIL: gate should return {aid!r} (confirmed additive, only candidate), "
+        f"got {result!r}"
+    )
+    mock_confirm.assert_called_once()
+    # Verify confirm_additive was called with the correct alpha_id
+    called_alpha_id = mock_confirm.call_args[0][1]  # positional arg 1 = alpha_id
+    assert called_alpha_id == aid, (
+        f"Phase6Plan3 FAIL: confirm_additive called with alpha_id={called_alpha_id!r}, "
+        f"expected {aid!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Entry point — mirrors test_phase3.py pattern
 # ---------------------------------------------------------------------------
 
