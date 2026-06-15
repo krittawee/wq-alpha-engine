@@ -27,6 +27,7 @@ from typing import Optional
 
 import requests
 
+import additivity
 import db
 import editor
 import fsa
@@ -80,6 +81,61 @@ def _rank_best(alpha_ids: list, conn: sqlite3.Connection) -> Optional[str]:
             best_id = alpha_id
 
     return best_id
+
+
+def _apply_additivity_gate(client, all_pass_ids: list, conn: sqlite3.Connection) -> Optional[str]:
+    """Run the two-layer additivity gate on pass candidates before assigning best_submittable.
+
+    Layer 1: rank_by_proxy — zero BRAIN calls; sorts by combined_corr; pre-filters obvious
+             non-additives (proxy_drop=True).
+    Layer 2: confirm_additive — ONE BRAIN /check per finalist (up to CONFIRM_LIMIT).
+
+    ADD-03: No alpha is labeled best_submittable unless confirm_additive returns additive=True.
+    T-06-09: additive=None (inconclusive) is treated as non-additive (strict True check).
+    T-06-10: confirm_additive is called sequentially here, NEVER inside grade_many thread pool.
+    T-06-12: CONFIRM_LIMIT caps the worst-case BRAIN /check cost per run.
+
+    401 from confirm_additive propagates to the caller unchanged — never swallowed here.
+
+    Args:
+        client: Authenticated BRAIN client.
+        all_pass_ids: List of alpha_id strings with status='pass'.
+        conn: SQLite connection.
+
+    Returns:
+        Best confirmed-additive alpha_id (highest Sharpe), or None if none confirmed additive.
+    """
+    if not all_pass_ids:
+        return None
+
+    # Build pass_candidates for rank_by_proxy
+    pass_candidates = []
+    for aid in all_pass_ids:
+        row = conn.execute(
+            "SELECT pnl_path FROM alphas WHERE alpha_id=?", (aid,)
+        ).fetchone()
+        pass_candidates.append({"alpha_id": aid, "pnl_path": row[0] if row else None})
+
+    # Layer 1: proxy rank — sort ascending by combined_corr (most additive first)
+    ranked = additivity.rank_by_proxy(pass_candidates, conn)
+    proxy_survivors = [r for r in ranked if not r.proxy_drop]
+
+    # Layer 2: confirm up to CONFIRM_LIMIT finalists with a real BRAIN /check
+    confirmed_ids = []
+    for r in proxy_survivors[:additivity.CONFIRM_LIMIT]:
+        if r.combined_corr is not None:
+            print(f"[hunt] additivity confirm: checking {r.alpha_id} (combined_corr={r.combined_corr:.3f})")
+        else:
+            print(f"[hunt] additivity confirm: checking {r.alpha_id} (combined_corr=N/A)")
+        result = additivity.confirm_additive(client, r.alpha_id, conn)
+        if result.additive is True:  # T-06-09: strict True — None and False excluded
+            confirmed_ids.append(r.alpha_id)
+
+    if not confirmed_ids:
+        print("[hunt] additivity gate: no confirmed-additive candidates — best_submittable=None")
+        return None
+
+    return _rank_best(confirmed_ids, conn)
 
 
 def _is_passable(conn: sqlite3.Connection, expr: str) -> bool:
@@ -254,7 +310,7 @@ def hunt(
             conn.commit()  # flush WR-05 near-status updates
             # Accumulate PASS across generations for best-of ranking
             all_pass_ids.extend(pass_ids)
-            best_submittable = _rank_best(all_pass_ids, conn)
+            best_submittable = _apply_additivity_gate(client, all_pass_ids, conn)
             best_near.extend(near_ids)
 
             print(
@@ -348,7 +404,7 @@ def hunt(
                         "UPDATE alphas SET status='near' WHERE alpha_id=?", (alpha_id,)
                     )
             conn.commit()  # flush final-pass near-status updates
-            best_submittable = _rank_best(all_pass_ids, conn)
+            best_submittable = _apply_additivity_gate(client, all_pass_ids, conn)
 
         # Snapshot structural diversity AFTER final generation (criterion 4)
         diversity_after = fsa.diversity_metric(conn)
