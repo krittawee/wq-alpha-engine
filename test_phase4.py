@@ -1719,7 +1719,12 @@ def test_phase6_plan2_rank_by_proxy_sort_ascending(tmp_path, conn):
 
 
 def test_phase6_plan2_soft_prefilter_margin(tmp_path, conn):
-    """proxy_drop is True only when combined_corr > limit + PROXY_MARGIN; False when limit is None."""
+    """proxy_drop is True only when max_pairwise_corr > limit + PROXY_MARGIN; False when limit is None.
+
+    WR-04: proxy_drop now gates on max_pairwise_corr (the pairwise quantity that maps onto
+    BRAIN's pairwise SELF_CORRELATION limit), not combined_corr.  combined_corr is the rank
+    key only.  Test intent preserved: drop when pairwise corr exceeds limit+margin.
+    """
     if _additivity is None:
         import pytest; pytest.skip("additivity module not available")
 
@@ -1737,36 +1742,39 @@ def test_phase6_plan2_soft_prefilter_margin(tmp_path, conn):
     MARGIN = _additivity.PROXY_MARGIN  # 0.05
     LIMIT = 0.7  # simulated DB limit
 
-    # We need _combined_book_corr to return specific values for testing.
-    # Patch it directly so we can control the combined_corr value.
+    # Patch both _combined_book_corr (rank key) and selfcorr.max_pearson (the actual gate).
+    # proxy_drop is keyed on max_pairwise_corr = selfcorr.max_pearson(...).
 
-    # Case 1: combined_corr = 0.78 (> 0.7 + 0.05 = 0.75) → proxy_drop = True
+    # Case 1: max_pairwise_corr = 0.78 (> 0.7 + 0.05 = 0.75) → proxy_drop = True
     cand1 = tmp_path / "CAND_FILT1.json"
     _make_pnl_file(cand1, n_dates=100, pnl_factor=1.0)
     with patch("selfcorr.get_selfcorr_limit", return_value=LIMIT), \
-         patch.object(_additivity, "_combined_book_corr", return_value=0.78):
+         patch.object(_additivity, "_combined_book_corr", return_value=0.78), \
+         patch("selfcorr.max_pearson", return_value=0.78):
         r = _additivity.rank_by_proxy([{"alpha_id": "CAND_FILT1", "pnl_path": str(cand1)}], conn)
     assert r[0].proxy_drop is True, (
-        f"Phase6Plan2 FAIL: combined_corr=0.78, limit=0.7, margin=0.05 → expected proxy_drop=True, "
+        f"Phase6Plan2 FAIL: max_pairwise_corr=0.78, limit=0.7, margin=0.05 → expected proxy_drop=True, "
         f"got {r[0].proxy_drop}"
     )
 
-    # Case 2: combined_corr = 0.72 (< 0.75) → proxy_drop = False
+    # Case 2: max_pairwise_corr = 0.72 (< 0.75) → proxy_drop = False
     cand2 = tmp_path / "CAND_FILT2.json"
     _make_pnl_file(cand2, n_dates=100, pnl_factor=1.0)
     with patch("selfcorr.get_selfcorr_limit", return_value=LIMIT), \
-         patch.object(_additivity, "_combined_book_corr", return_value=0.72):
+         patch.object(_additivity, "_combined_book_corr", return_value=0.72), \
+         patch("selfcorr.max_pearson", return_value=0.72):
         r = _additivity.rank_by_proxy([{"alpha_id": "CAND_FILT2", "pnl_path": str(cand2)}], conn)
     assert r[0].proxy_drop is False, (
-        f"Phase6Plan2 FAIL: combined_corr=0.72 < 0.75 (limit+margin) → expected proxy_drop=False, "
+        f"Phase6Plan2 FAIL: max_pairwise_corr=0.72 < 0.75 (limit+margin) → expected proxy_drop=False, "
         f"got {r[0].proxy_drop}"
     )
 
-    # Case 3: combined_corr = 0.78 but limit = None → proxy_drop = False (never drop without limit)
+    # Case 3: max_pairwise_corr = 0.78 but limit = None → proxy_drop = False (never drop without limit)
     cand3 = tmp_path / "CAND_FILT3.json"
     _make_pnl_file(cand3, n_dates=100, pnl_factor=1.0)
     with patch("selfcorr.get_selfcorr_limit", return_value=None), \
-         patch.object(_additivity, "_combined_book_corr", return_value=0.78):
+         patch.object(_additivity, "_combined_book_corr", return_value=0.78), \
+         patch("selfcorr.max_pearson", return_value=0.78):
         r = _additivity.rank_by_proxy([{"alpha_id": "CAND_FILT3", "pnl_path": str(cand3)}], conn)
     assert r[0].proxy_drop is False, (
         f"Phase6Plan2 FAIL: limit=None → expected proxy_drop=False (never drop without limit), "

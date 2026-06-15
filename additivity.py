@@ -51,10 +51,15 @@ class AdditivityResult:
 # ---------------------------------------------------------------------------
 
 def _combined_book_corr(candidate_path: str, ref_paths: list) -> Optional[float]:
-    """Correlate candidate daily returns against the summed book daily returns.
+    """Correlate candidate daily returns against the normalised combined-book returns.
 
-    Builds the combined-book PnL series by summing daily returns across all
-    ACTIVE reference paths, then Pearson-correlates against the candidate.
+    Builds the combined-book series by summing stdev-normalised daily returns across
+    all ACTIVE reference paths (WR-03: prevents large-magnitude members from dominating),
+    then Pearson-correlates against the candidate.
+
+    This is an UNWEIGHTED-RANK APPROXIMATION — suitable as a sort key only.
+    For the drop gate, use max_pairwise_corr, which maps faithfully onto BRAIN's
+    pairwise SELF_CORRELATION limit (WR-04).
 
     Args:
         candidate_path: path to candidate PnL JSON ({"dates": [...], "pnls": [...]})
@@ -105,9 +110,21 @@ def _combined_book_corr(candidate_path: str, ref_paths: list) -> Optional[float]
         ref_pnl_seq = [ref_map[d] for d in overlap]
         ref_daily = selfcorr._pnls_to_daily_returns(ref_pnl_seq)
 
+        # WR-03: normalize by stdev before accumulating so large-magnitude book members
+        # don't dominate the combined series.  combined_corr is an unweighted-rank
+        # approximation; max_pairwise_corr is the faithful gate predictor (WR-04).
+        if len(ref_daily) < 2:
+            continue
+        mean_rd = sum(ref_daily) / len(ref_daily)
+        variance = sum((x - mean_rd) ** 2 for x in ref_daily) / len(ref_daily)  # population stdev
+        stdev_rd = variance ** 0.5
+        if stdev_rd == 0.0:
+            continue  # constant series — skip to avoid division by zero (WR-03 guard)
+        normalized = [r / stdev_rd for r in ref_daily]
+
         # Accumulate into book_map on dates overlap[1:] (daily return covers D from D-1→D)
-        for date, ret in zip(overlap[1:], ref_daily):
-            book_map[date] = book_map.get(date, 0.0) + ret
+        for date, nret in zip(overlap[1:], normalized):
+            book_map[date] = book_map.get(date, 0.0) + nret
 
         refs_used += 1
 
@@ -209,9 +226,13 @@ def rank_by_proxy(
         else:
             max_pairwise_corr = 0.0
 
-        # D-02 soft pre-filter: drop only when WELL ABOVE limit + margin
-        # When combined_corr is None (no data), never drop (D-04 principle)
-        if combined_corr is not None and limit is not None and combined_corr > limit + margin:
+        # D-02 soft pre-filter: gate on max_pairwise_corr — the pairwise quantity that maps
+        # onto BRAIN's pairwise SELF_CORRELATION limit.  combined_corr is kept as the
+        # additivity rank key only (sort below).  Using combined_corr for the drop gate was
+        # apples-to-oranges (combined-book vs pairwise limit); max_pairwise_corr is faithful.
+        # When max_pairwise_corr is None (no data), never drop (D-04 principle).
+        if (max_pairwise_corr is not None and limit is not None
+                and max_pairwise_corr > limit + margin):
             proxy_drop = True
         else:
             proxy_drop = False
