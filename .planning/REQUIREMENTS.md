@@ -44,7 +44,7 @@ Source of truth: `docs/plans/2026-06-07-alpha-system-design.md`.
 
 - [x] **ADD-01**: System estimates a candidate's correlation to the user's existing book from a cheap local PnL proxy (no BRAIN call) so candidates can be ranked by likely additivity
 - [x] **ADD-02**: System confirms a finalist's additivity with BRAIN's real correlation check before recommending it for submission
-- [ ] **ADD-03**: No alpha is presented as submit-ready unless it passes the additivity gate — passes all IS checks AND is decorrelated enough to add to the book
+- [x] **ADD-03**: No alpha is presented as submit-ready unless it passes the additivity gate — passes all IS checks AND is decorrelated enough to add to the book
 - [x] **ADD-04**: The additivity gate is reusable both as a yes/no filter (discovery) and as a rank-by score (refinement)
 
 ### Delay (delay-0 support)
@@ -109,7 +109,7 @@ Deferred beyond this milestone.
 | DLY-02 | Phase 5 | Complete |
 | ADD-01 | Phase 6 | Complete |
 | ADD-02 | Phase 6 | Complete |
-| ADD-03 | Phase 6 | Pending |
+| ADD-03 | Phase 6 | Complete |
 | ADD-04 | Phase 6 | Complete |
 | BF-01 | Phase 7 | Pending |
 | BF-02 | Phase 7 | Pending |

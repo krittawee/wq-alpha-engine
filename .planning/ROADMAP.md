@@ -26,7 +26,7 @@ PnL proxy + real BRAIN correlation confirm), a standalone brute-force generation
 - [x] **Phase 3: Smart Iteration** - Editor diagnose+mutate loop, memory-aware dedupe, local PnL pre-filter, Frequent Subtree Avoidance (completed 2026-06-10)
 - [x] **Phase 4: Optimization & Polish** - Knowledge-driven Settings Optimizer, decay monitor, Obsidian prose layer (completed 2026-06-11)
 - [x] **Phase 5: Delay-0 Feasibility & Plumbing** - Confirmed BRAIN runs delay-0 from code (Test A PASS, alpha e7rvXqwz); coercion detection wired; `--delay` threaded end-to-end (completed 2026-06-13)
-- [ ] **Phase 6: Additivity Gate** - Local PnL correlation proxy to rank candidates + real BRAIN correlation confirm; reusable as filter and as score
+- [x] **Phase 6: Additivity Gate** - Local PnL correlation proxy to rank candidates + real BRAIN correlation confirm; reusable as filter and as score (completed 2026-06-15)
 - [ ] **Phase 7: Brute-Force Tool (Tool B)** - In-repo template enumeration, local validate, probe-sim, bulk-sim, additivity gate; fully standalone; no AI dependency
 - [ ] **Phase 8: Evolve /hunt + Fold /find-alphas** - Add `--delay`, additivity-gated selection to /hunt; retire /find-alphas as `/hunt --research-only`
 - [ ] **Phase 9: /iterate Decorrelate Mode** - Given a passing alpha, search neutralization/settings/mutation variants for the most-additive one that still passes all checks
@@ -206,7 +206,7 @@ Plans:
 
 **Wave 3** *(blocked on Wave 2)*
 
-- [ ] 06-03-PLAN.md — hunt.py: _apply_additivity_gate helper + both best_submittable sites wired + 2 integration tests
+- [x] 06-03-PLAN.md — hunt.py: _apply_additivity_gate helper + both best_submittable sites wired + 2 integration tests
 
 ### Phase 7: Brute-Force Tool (Tool B)
 
@@ -261,7 +261,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 3. Smart Iteration | 6/6 | Complete | 2026-06-10 |
 | 4. Optimization & Polish | 6/6 | Complete | 2026-06-11 |
 | 5. Delay-0 Feasibility & Plumbing | 2/3 | In Progress|  |
-| 6. Additivity Gate | 2/3 | In Progress|  |
+| 6. Additivity Gate | 3/3 | Complete   | 2026-06-15 |
 | 7. Brute-Force Tool (Tool B) | 0/TBD | Not started | - |
 | 8. Evolve /hunt + Fold /find-alphas | 0/TBD | Not started | - |
 | 9. /iterate Decorrelate Mode | 0/TBD | Not started | - |
