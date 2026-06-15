@@ -4,13 +4,13 @@ milestone: v1.1
 milestone_name: Additive Alpha Discovery
 status: executing
 stopped_at: Phase 5 complete (all 3 plans) — delay-0 confirmed feasible from code
-last_updated: "2026-06-13T16:40:51.949Z"
-last_activity: 2026-06-13 -- Phase 6 planning complete
+last_updated: "2026-06-15T05:15:04.887Z"
+last_activity: 2026-06-15
 progress:
   total_phases: 9
   completed_phases: 5
   total_plans: 27
-  completed_plans: 24
+  completed_plans: 25
   percent: 56
 ---
 
@@ -21,14 +21,14 @@ progress:
 See: .planning/PROJECT.md (updated 2026-06-07)
 
 **Core value:** Produce a decent, genuinely-submittable alpha — verified against BRAIN's own checks (never guessed) — while remembering every alpha tried so the system never repeats itself
-**Current focus:** Phase 05 — delay-0-feasibility-plumbing
+**Current focus:** Phase 06 — additivity-gate
 
 ## Current Position
 
-Phase: 06 (additivity-gate) — CONTEXT GATHERED (ready to plan)
-Plan: 0 of TBD
+Phase: 06 (additivity-gate) — EXECUTING
+Plan: 2 of 3
 Status: Ready to execute
-Last activity: 2026-06-13 -- Phase 6 planning complete
+Last activity: 2026-06-15
 
 ## Performance Metrics
 
@@ -57,6 +57,7 @@ Last activity: 2026-06-13 -- Phase 6 planning complete
 | Phase 02-grounded-generation P02 | 305s | 2 tasks | 3 files |
 | Phase 02-grounded-generation P04 | 900 | 2 tasks | 1 files |
 | Phase 05-delay-0-feasibility-plumbing P01 | 25 | 3 tasks | 6 files |
+| Phase 06 P01 | 8 | 2 tasks | 2 files |
 
 ## Accumulated Context
 
@@ -117,6 +118,6 @@ Recent decisions affecting current work:
 
 ## Session Continuity
 
-Last session: 2026-06-13T12:30:00.000Z
+Last session: 2026-06-15T05:15:04.882Z
 Stopped at: Phase 5 complete (all 3 plans) — delay-0 confirmed feasible from code
 Resume file: None

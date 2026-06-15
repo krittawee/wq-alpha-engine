@@ -198,7 +198,7 @@ Plans:
 Plans:
 **Wave 1** *(independent)*
 
-- [ ] 06-01-PLAN.md — selfcorr.py: get_book_pnl_paths (status=ACTIVE only) + _null_stale_pnl_paths + backfill_active_pnl D-04 fix + 4 offline tests
+- [x] 06-01-PLAN.md — selfcorr.py: get_book_pnl_paths (status=ACTIVE only) + _null_stale_pnl_paths + backfill_active_pnl D-04 fix + 4 offline tests
 
 **Wave 2** *(blocked on Wave 1)*
 
@@ -261,7 +261,7 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 3. Smart Iteration | 6/6 | Complete | 2026-06-10 |
 | 4. Optimization & Polish | 6/6 | Complete | 2026-06-11 |
 | 5. Delay-0 Feasibility & Plumbing | 2/3 | In Progress|  |
-| 6. Additivity Gate | 0/TBD | Not started | - |
+| 6. Additivity Gate | 1/3 | In Progress|  |
 | 7. Brute-Force Tool (Tool B) | 0/TBD | Not started | - |
 | 8. Evolve /hunt + Fold /find-alphas | 0/TBD | Not started | - |
 | 9. /iterate Decorrelate Mode | 0/TBD | Not started | - |
