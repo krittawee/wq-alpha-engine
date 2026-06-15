@@ -1953,6 +1953,240 @@ def test_phase6_plan2_confirm_additive_fail_and_no_hardcode(tmp_path, conn):
 
 
 # ---------------------------------------------------------------------------
+# WR-05: present PROD_CORRELATION FAIL blocks additivity even when SELF_CORRELATION PASSes
+# ---------------------------------------------------------------------------
+
+
+def test_phase6_wr05_prod_fail_blocks_additivity(tmp_path, conn):
+    """WR-05: confirm_additive returns additive=False when PROD_CORRELATION is present and FAIL.
+
+    Before WR-05, a SELF_CORRELATION PASS was sufficient for additive=True even if
+    PROD_CORRELATION returned FAIL.  The fix ensures a present-and-FAILing
+    PROD_CORRELATION always blocks additivity.
+    """
+    if _additivity is None:
+        import pytest; pytest.skip("additivity module not available")
+
+    from unittest.mock import MagicMock, patch
+
+    alpha_id = "WR05_PROD_FAIL_01"
+    conn.execute(
+        "INSERT OR REPLACE INTO alphas(alpha_id, expression, status, pnl_path) VALUES(?,?,?,?)",
+        (alpha_id, "rank(close)", "pass", None),
+    )
+    conn.commit()
+
+    mock_client = MagicMock()
+    # SELF_CORRELATION PASS but PROD_CORRELATION FAIL — must block additivity (WR-05)
+    mock_corr_response = {
+        "SELF_CORRELATION": {
+            "name": "SELF_CORRELATION",
+            "result": "PASS",
+            "value": 0.40,
+            "limit": 0.7,
+        },
+        "PROD_CORRELATION": {
+            "name": "PROD_CORRELATION",
+            "result": "FAIL",
+            "value": 0.85,
+            "limit": 0.7,
+        },
+    }
+
+    with patch("grade.trigger_correlation_check"), \
+         patch("grade.poll_correlation", return_value=mock_corr_response):
+        result = _additivity.confirm_additive(mock_client, alpha_id, conn)
+
+    assert result.additive is False, (
+        f"WR-05 FAIL: expected additive=False when PROD_CORRELATION is FAIL "
+        f"(even though SELF_CORRELATION PASSed), got additive={result.additive!r}. "
+        f"A present-and-FAILing PROD_CORRELATION must block additivity."
+    )
+
+
+def test_phase6_wr05_prod_absent_does_not_block(tmp_path, conn):
+    """WR-05: confirm_additive returns additive=True when PROD_CORRELATION is absent (no key).
+
+    PROD_CORRELATION absence must NOT block additivity — only a present FAIL does.
+    """
+    if _additivity is None:
+        import pytest; pytest.skip("additivity module not available")
+
+    from unittest.mock import MagicMock, patch
+
+    alpha_id = "WR05_PROD_ABSENT_01"
+    conn.execute(
+        "INSERT OR REPLACE INTO alphas(alpha_id, expression, status, pnl_path) VALUES(?,?,?,?)",
+        (alpha_id, "rank(close)", "pass", None),
+    )
+    conn.commit()
+
+    mock_client = MagicMock()
+    # Only SELF_CORRELATION present — PROD_CORRELATION key absent entirely
+    mock_corr_response = {
+        "SELF_CORRELATION": {
+            "name": "SELF_CORRELATION",
+            "result": "PASS",
+            "value": 0.35,
+            "limit": 0.7,
+        },
+        # no PROD_CORRELATION key
+    }
+
+    with patch("grade.trigger_correlation_check"), \
+         patch("grade.poll_correlation", return_value=mock_corr_response):
+        result = _additivity.confirm_additive(mock_client, alpha_id, conn)
+
+    assert result.additive is True, (
+        f"WR-05 FAIL: expected additive=True when PROD_CORRELATION is absent "
+        f"(SELF_CORRELATION PASSes, no PROD key), got additive={result.additive!r}. "
+        f"PROD_CORRELATION absence must not block additivity."
+    )
+
+
+# ---------------------------------------------------------------------------
+# WR-01: scored-vs-fallback finalist selection in _apply_additivity_gate
+# ---------------------------------------------------------------------------
+
+
+def test_phase6_wr01_scored_survivors_preferred(tmp_path, conn):
+    """WR-01: finalists come from scored (combined_corr is not None) survivors first.
+
+    When some candidates have combined_corr set and some are skipped (combined_corr=None),
+    the gate must pick scored survivors for confirmation, not the unranked/skipped ones.
+    """
+    if _hunt_gate is None:
+        import pytest; pytest.skip("_apply_additivity_gate not importable from hunt")
+    if _additivity is None:
+        import pytest; pytest.skip("additivity module not available")
+
+    from unittest.mock import MagicMock, patch
+
+    scored_id = "WR01_SCORED_01"
+    skipped_id = "WR01_SKIPPED_01"
+
+    for aid, sharpe in [(scored_id, 1.5), (skipped_id, 1.6)]:
+        pnl_file = tmp_path / f"{aid}.json"
+        pnl_file.write_text(_json.dumps({"dates": ["2022-01-03", "2022-01-04"], "pnls": [0.0, 100.0]}))
+        conn.execute(
+            "INSERT OR REPLACE INTO alphas(alpha_id, expression, status, sharpe, pnl_path) VALUES(?,?,?,?,?)",
+            (aid, "rank(close)", "pass", sharpe, str(pnl_file)),
+        )
+    conn.commit()
+
+    # rank_by_proxy returns one scored survivor + one skipped (combined_corr=None)
+    scored_proxy = _additivity.AdditivityResult(
+        alpha_id=scored_id,
+        pnl_path=str(tmp_path / f"{scored_id}.json"),
+        combined_corr=0.25,
+        max_pairwise_corr=0.30,
+        proxy_drop=False,
+        skipped=False,
+    )
+    skipped_proxy = _additivity.AdditivityResult(
+        alpha_id=skipped_id,
+        pnl_path=None,
+        combined_corr=None,
+        max_pairwise_corr=None,
+        proxy_drop=False,
+        skipped=True,
+    )
+
+    confirm_result = _additivity.AdditivityResult(
+        alpha_id=scored_id,
+        pnl_path=None,
+        combined_corr=None,
+        max_pairwise_corr=None,
+        proxy_drop=False,
+        skipped=False,
+        additive=True,
+    )
+
+    mock_client = MagicMock()
+
+    confirmed_alpha_ids = []
+
+    def capture_confirm(client, alpha_id, conn, **kwargs):
+        confirmed_alpha_ids.append(alpha_id)
+        return confirm_result
+
+    with patch("additivity.rank_by_proxy", return_value=[scored_proxy, skipped_proxy]), \
+         patch("additivity.confirm_additive", side_effect=capture_confirm):
+        result = _hunt_gate(mock_client, [scored_id, skipped_id], conn)
+
+    assert scored_id in confirmed_alpha_ids, (
+        f"WR-01 FAIL: scored candidate {scored_id!r} was not sent to confirm_additive. "
+        f"Confirms were sent to: {confirmed_alpha_ids!r}. "
+        f"Scored survivors (combined_corr set) must be preferred over skipped candidates."
+    )
+    assert skipped_id not in confirmed_alpha_ids, (
+        f"WR-01 FAIL: skipped candidate {skipped_id!r} was incorrectly sent to confirm_additive. "
+        f"Skipped candidates (combined_corr=None) must not consume confirm slots when scored "
+        f"survivors are available."
+    )
+    assert result == scored_id, (
+        f"WR-01 FAIL: gate returned {result!r}; expected {scored_id!r}"
+    )
+
+
+def test_phase6_wr01_fallback_when_all_unranked(tmp_path, conn):
+    """WR-01 fallback: when ALL candidates have combined_corr=None (empty book), fall back
+    to the original unranked behaviour so PASS alphas can still be confirmed.
+    """
+    if _hunt_gate is None:
+        import pytest; pytest.skip("_apply_additivity_gate not importable from hunt")
+    if _additivity is None:
+        import pytest; pytest.skip("additivity module not available")
+
+    from unittest.mock import MagicMock, patch
+
+    aid = "WR01_FALLBACK_01"
+    pnl_file = tmp_path / f"{aid}.json"
+    pnl_file.write_text(_json.dumps({"dates": ["2022-01-03", "2022-01-04"], "pnls": [0.0, 100.0]}))
+    conn.execute(
+        "INSERT OR REPLACE INTO alphas(alpha_id, expression, status, sharpe, pnl_path) VALUES(?,?,?,?,?)",
+        (aid, "rank(close)", "pass", 1.5, str(pnl_file)),
+    )
+    conn.commit()
+
+    # All candidates have combined_corr=None (book reference set empty)
+    unranked_proxy = _additivity.AdditivityResult(
+        alpha_id=aid,
+        pnl_path=str(pnl_file),
+        combined_corr=None,
+        max_pairwise_corr=None,
+        proxy_drop=False,
+        skipped=False,
+    )
+
+    confirm_result = _additivity.AdditivityResult(
+        alpha_id=aid,
+        pnl_path=None,
+        combined_corr=None,
+        max_pairwise_corr=None,
+        proxy_drop=False,
+        skipped=False,
+        additive=True,
+    )
+
+    mock_client = MagicMock()
+
+    with patch("additivity.rank_by_proxy", return_value=[unranked_proxy]), \
+         patch("additivity.confirm_additive", return_value=confirm_result) as mock_confirm:
+        result = _hunt_gate(mock_client, [aid], conn)
+
+    # Fallback must have sent the unranked candidate to confirm_additive
+    assert mock_confirm.call_count == 1, (
+        f"WR-01 FAIL: fallback path did not call confirm_additive — "
+        f"when all candidates are unranked (combined_corr=None), gate must fall back "
+        f"to original behaviour and still confirm proxy_drop=False candidates."
+    )
+    assert result == aid, (
+        f"WR-01 FAIL: gate returned {result!r}; expected {aid!r}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Phase 6 Plan 3 — hunt.py additivity gate integration tests (two tests)
 # No BRAIN API calls. Uses in-memory SQLite and tmp_path PnL fixtures.
 # Patches additivity.rank_by_proxy and additivity.confirm_additive at the

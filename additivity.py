@@ -271,7 +271,8 @@ def confirm_additive(
 
     401 propagates immediately (never caught here).
     TimeoutError → additive=None + warning printed.
-    PROD_CORRELATION is optional — its absence is not an error.
+    PROD_CORRELATION absence is not an error (not all alphas are production-submitted).
+    A present-and-FAILing PROD_CORRELATION blocks additivity (WR-05).
 
     Args:
         client: authenticated BRAIN client (must have ._session)
@@ -319,12 +320,17 @@ def confirm_additive(
     prod_value = pc.get("value")
     prod_result = pc.get("result")
 
-    # Determine additive verdict from SELF_CORRELATION only
-    # (PROD_CORRELATION absence is not an error per grade.py:540 docstring)
+    # Determine additive verdict.
+    # PROD_CORRELATION absence is not an error — a missing check just doesn't block.
+    # But a present-and-FAILing PROD_CORRELATION blocks additivity (WR-05):
+    #   * self_result is None                          → inconclusive (SELF_CORRELATION absent)
+    #   * self_result == "PASS" and prod not FAIL      → additive=True
+    #   * self_result != "PASS" (FAIL/PENDING)         → additive=False
+    #   * self_result == "PASS" and prod == "FAIL"     → additive=False (PROD blocks)
     if self_result is None:
         # SELF_CORRELATION absent from response — inconclusive
         additive = None
-    elif self_result == "PASS":
+    elif self_result == "PASS" and prod_result in (None, "PASS", "PENDING"):
         additive = True
     else:
         additive = False
