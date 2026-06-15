@@ -120,10 +120,24 @@ def _apply_additivity_gate(client, all_pass_ids: list, conn: sqlite3.Connection)
 
     # Layer 1: proxy rank — sort ascending by combined_corr (most additive first)
     ranked = additivity.rank_by_proxy(pass_candidates, conn)
-    proxy_survivors = [r for r in ranked if not r.proxy_drop]
+
+    # WR-01: prefer SCORED survivors for confirms — skip no-data candidates that would
+    # waste BRAIN /check budget on alphas the proxy couldn't even rank.
+    scored_survivors = [
+        r for r in ranked
+        if not r.proxy_drop and not r.skipped and r.combined_corr is not None
+    ]
+    # Graceful fallback: if the book reference set is empty, every candidate has
+    # combined_corr=None.  Fall back to the original behaviour so PASS alphas can
+    # still be confirmed even when proxy ranking is unavailable.
+    if scored_survivors:
+        proxy_survivors = scored_survivors
+    else:
+        proxy_survivors = [r for r in ranked if not r.proxy_drop]  # fallback: unranked OK
 
     # Layer 2: confirm up to CONFIRM_LIMIT finalists with a real BRAIN /check
     confirmed_ids = []
+    inconclusive_count = 0   # WR-02: track timeouts/absent SELF_CORRELATION separately
     for r in proxy_survivors[:additivity.CONFIRM_LIMIT]:
         if r.combined_corr is not None:
             print(f"[hunt] additivity confirm: checking {r.alpha_id} (combined_corr={r.combined_corr:.3f})")
@@ -132,9 +146,20 @@ def _apply_additivity_gate(client, all_pass_ids: list, conn: sqlite3.Connection)
         result = additivity.confirm_additive(client, r.alpha_id, conn)
         if result.additive is True:  # T-06-09: strict True — None and False excluded
             confirmed_ids.append(r.alpha_id)
+        elif result.additive is None:
+            inconclusive_count += 1  # WR-02: timeout or absent SELF_CORRELATION
 
     if not confirmed_ids:
-        print("[hunt] additivity gate: no confirmed-additive candidates — best_submittable=None")
+        # WR-02: distinguish transient inconclusive from genuine rejection so callers
+        # can decide whether to retry vs discard the PASS set.
+        if inconclusive_count > 0:
+            print(
+                f"[hunt] additivity gate: {inconclusive_count} finalist(s) inconclusive "
+                f"(timeout/absent SELF_CORRELATION) — not discarding as rejected; "
+                f"best_submittable=None this run"
+            )
+        else:
+            print("[hunt] additivity gate: no confirmed-additive candidates — best_submittable=None")
         return None
 
     return _rank_best(confirmed_ids, conn)
