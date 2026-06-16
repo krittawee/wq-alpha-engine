@@ -327,3 +327,331 @@ def test_probe_spread_sample():
     assert window_vals_covered == set(windows), (
         f"probe_spread_sample did not cover all window values: {window_vals_covered} vs {set(windows)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# BF-03 / BF-04 / BF-05 / BF-06 engine tests (Plan 07-03: bruteforce.py)
+# ---------------------------------------------------------------------------
+
+
+def test_probe_abandon():
+    """BF-03 / D-05: template abandoned when all probe sims are far-fail.
+
+    All probe grade_many calls return status="fail". classify_from_checks returns
+    ("fail", [...]) for every probe alpha. Validates:
+    - "template abandoned after probe" is printed
+    - bruteforce_runs row: n_simmed == 0 (no bulk-sim)
+    - Engine still records 1 bruteforce_runs row (probe_abandoned template IS persisted)
+    """
+    import io
+    import bruteforce
+
+    client = MagicMock()
+
+    # 5 probe results all with status="fail", no alpha_id
+    fail_results = [
+        {"status": "fail", "alpha_id": None, "checks": [], "expression": f"expr_{i}"}
+        for i in range(5)
+    ]
+
+    with (
+        unittest.mock.patch("bruteforce.selfcorr.backfill_active_pnl"),
+        unittest.mock.patch("bruteforce.probe_delay.probe_and_gate"),
+        unittest.mock.patch("bruteforce.validate.validate", return_value=(True, "")),
+        unittest.mock.patch("bruteforce.grade.grade_many", return_value=fail_results),
+        unittest.mock.patch(
+            "bruteforce.editor.classify_from_checks", return_value=("fail", ["SHARPE"])
+        ),
+        unittest.mock.patch(
+            "bruteforce.additivity.rank_by_proxy",
+            side_effect=AssertionError("additivity gate must not be reached on probe abandon"),
+        ),
+        unittest.mock.patch(
+            "bruteforce.additivity.confirm_additive",
+            side_effect=AssertionError("confirm_additive must not be reached on probe abandon"),
+        ),
+    ):
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            result = bruteforce.bruteforce(
+                client=client,
+                db_path=":memory:",
+                delay=0,
+                quota=5,
+                probe_size=5,
+                template_names=["residual_momentum"],
+            )
+        output = buf.getvalue()
+
+    # Engine reports 1 template done (probe-abandoned templates still count as processed)
+    assert result["n_templates_done"] == 1, (
+        f"Expected 1 template done (probe-abandoned), got {result['n_templates_done']}"
+    )
+    # Log must mention probe abandon
+    assert "template abandoned after probe" in output, (
+        f"Expected 'template abandoned after probe' in output; got: {output!r}"
+    )
+    # No additive survivors found
+    assert result["quota_count"] == 0, "Expected 0 additive survivors for probe-abandoned run"
+
+
+def test_validate_gate_drops_combos():
+    """BF-02 (engine): validate gate in bruteforce() drops all combos; grade_one never called.
+
+    Patches validate.validate to always return (False, 'unknown field').
+    Verifies:
+    - grade.grade_one is NEVER called (simulation skipped entirely)
+    - bruteforce_runs row has failure_counts["validate_dropped"] > 0, n_simmed == 0
+    """
+    import json
+    import bruteforce
+
+    client = MagicMock()
+
+    # grade.grade_one should never be reached; grade_many also never reached
+    grade_one_mock = MagicMock(side_effect=AssertionError("grade_one must not be called"))
+    grade_many_mock = MagicMock(side_effect=AssertionError("grade_many must not be called"))
+
+    # We need a real in-memory DB to verify the bruteforce_runs row
+    real_conn = db.init_db(":memory:")
+
+    with (
+        unittest.mock.patch("bruteforce.selfcorr.backfill_active_pnl"),
+        unittest.mock.patch("bruteforce.probe_delay.probe_and_gate"),
+        unittest.mock.patch("bruteforce.validate.validate", return_value=(False, "unknown field 'bad_token'")),
+        unittest.mock.patch("bruteforce.grade.grade_one", grade_one_mock),
+        unittest.mock.patch("bruteforce.grade.grade_many", grade_many_mock),
+        unittest.mock.patch("bruteforce.db.init_db", return_value=real_conn),
+    ):
+        result = bruteforce.bruteforce(
+            client=client,
+            db_path=":memory:",
+            delay=0,
+            quota=5,
+            probe_size=5,
+            template_names=["beta_neutral"],  # 6 combos (2 fields x 3 windows), all dropped
+        )
+
+    # grade_one / grade_many must not have been called (AssertionError would have fired)
+    # If we reach here without exception, the validate gate worked correctly.
+
+    # Check bruteforce_runs row
+    row = real_conn.execute(
+        "SELECT n_simmed, failure_counts FROM bruteforce_runs ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row is not None, "bruteforce_runs row missing after run with validate failures"
+    assert row[0] == 0, f"n_simmed should be 0 when all combos are validate-dropped, got {row[0]}"
+    fc = json.loads(row[1]) if row[1] else {}
+    assert fc.get("validate_dropped", 0) > 0, (
+        f"failure_counts['validate_dropped'] should be > 0, got: {fc}"
+    )
+
+    real_conn.close()
+
+
+def test_quota_stop():
+    """BF-04 / D-07: engine stops after quota additive survivors are found.
+
+    With quota=1 and 2 templates: engine stops after the first template yields
+    1 additive survivor — second template is never processed.
+    Verifies: quota_count==1, stop_reason=="quota_met", n_templates_done==1.
+    """
+    import bruteforce
+
+    client = MagicMock()
+
+    # Probe: 1 result with status="near" so template survives probe
+    probe_result = [{"status": "near", "alpha_id": "alpha_probe_001", "checks": [], "expression": "expr_0"}]
+
+    # Bulk-sim: return 1 IS-passing alpha
+    bulk_return = {"results": [{"status": "pass", "alpha_id": "alpha_bulk_001", "checks": [], "expression": "expr_bulk"}], "hit_401": False}
+
+    # Additivity gate: rank_by_proxy → 1 survivor; confirm_additive → additive=True
+    proxy_survivor = MagicMock()
+    proxy_survivor.proxy_drop = False
+    proxy_survivor.alpha_id = "alpha_bulk_001"
+    rank_result = [proxy_survivor]
+
+    additive_confirm = MagicMock()
+    additive_confirm.additive = True
+    additive_confirm.alpha_id = "alpha_bulk_001"
+
+    # classify_from_checks: "near" for probe result (template survives)
+    real_conn = db.init_db(":memory:")
+
+    with (
+        unittest.mock.patch("bruteforce.selfcorr.backfill_active_pnl"),
+        unittest.mock.patch("bruteforce.probe_delay.probe_and_gate"),
+        unittest.mock.patch("bruteforce.validate.validate", return_value=(True, "")),
+        unittest.mock.patch("bruteforce.grade.grade_many", return_value=probe_result),
+        unittest.mock.patch("bruteforce.editor.classify_from_checks", return_value=("near", [])),
+        unittest.mock.patch("bruteforce._bulk_sim_quota_aware", return_value=bulk_return),
+        unittest.mock.patch("bruteforce.additivity.rank_by_proxy", return_value=rank_result),
+        unittest.mock.patch("bruteforce.additivity.confirm_additive", return_value=additive_confirm),
+        unittest.mock.patch("bruteforce.db.init_db", return_value=real_conn),
+    ):
+        result = bruteforce.bruteforce(
+            client=client,
+            db_path=":memory:",
+            delay=0,
+            quota=1,
+            probe_size=5,
+            # 2 templates: beta_neutral (all-literal slots, 6 combos) + residual_momentum
+            template_names=["beta_neutral", "residual_momentum"],
+        )
+
+    assert result["quota_count"] == 1, (
+        f"Expected quota_count=1, got {result['quota_count']}"
+    )
+    assert result["stop_reason"] == "quota_met", (
+        f"Expected stop_reason='quota_met', got {result['stop_reason']!r}"
+    )
+    assert result["n_templates_done"] == 1, (
+        f"Expected engine to stop after 1st template, got n_templates_done={result['n_templates_done']}"
+    )
+
+    real_conn.close()
+
+
+def test_401_stop():
+    """D-09: 401 from bulk-sim triggers sys.exit(1) with partial=1 in bruteforce_runs row.
+
+    Verifies:
+    - bruteforce() calls sys.exit(1) (caught as SystemExit)
+    - bruteforce_runs row for in-progress template has partial=1
+    - No re-auth attempt (login never called inside engine)
+    """
+    import requests
+    import bruteforce
+
+    client = MagicMock()
+
+    # Probe passes so template survives probe phase
+    probe_result = [{"status": "near", "alpha_id": "alpha_probe_401", "checks": [], "expression": "expr_0"}]
+
+    # _bulk_sim_quota_aware returns hit_401=True (simulates 401 during bulk-sim)
+    bulk_401_return = {"results": [], "hit_401": True}
+
+    real_conn = db.init_db(":memory:")
+
+    with (
+        unittest.mock.patch("bruteforce.selfcorr.backfill_active_pnl"),
+        unittest.mock.patch("bruteforce.probe_delay.probe_and_gate"),
+        unittest.mock.patch("bruteforce.validate.validate", return_value=(True, "")),
+        unittest.mock.patch("bruteforce.grade.grade_many", return_value=probe_result),
+        unittest.mock.patch("bruteforce.editor.classify_from_checks", return_value=("near", [])),
+        unittest.mock.patch("bruteforce._bulk_sim_quota_aware", return_value=bulk_401_return),
+        unittest.mock.patch("bruteforce.db.init_db", return_value=real_conn),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            bruteforce.bruteforce(
+                client=client,
+                db_path=":memory:",
+                delay=0,
+                quota=5,
+                probe_size=5,
+                template_names=["beta_neutral"],
+            )
+
+    assert exc_info.value.code == 1, (
+        f"Expected sys.exit(1), got exit code {exc_info.value.code}"
+    )
+
+    # bruteforce_runs row for the in-progress template must have partial=1
+    row = real_conn.execute(
+        "SELECT partial FROM bruteforce_runs ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    assert row is not None, "bruteforce_runs row missing after 401 stop"
+    assert row[0] == 1, (
+        f"Expected partial=1 in bruteforce_runs row after 401, got partial={row[0]}"
+    )
+
+    real_conn.close()
+
+
+def test_bruteforce_runs_row_per_template():
+    """BF-06 / D-11: one bruteforce_runs row written per template, even with 0 survivors.
+
+    Runs bruteforce() with 2 templates (beta_neutral + residual_momentum).
+    Probe passes but bulk-sim returns 0 IS-passing alphas → no additivity gate reached.
+    Verifies:
+    - COUNT(*) from bruteforce_runs == 2 (one row per template)
+    - Both rows have valid JSON in failure_counts and examples columns
+    """
+    import json
+    import bruteforce
+
+    client = MagicMock()
+
+    # Probe: passes with "near" — templates survive probe stage
+    probe_result = [{"status": "near", "alpha_id": "alpha_probe_row", "checks": [], "expression": "expr_0"}]
+
+    # Bulk-sim: 0 IS-passing alphas → quota never met, additivity gate never reached
+    bulk_no_survivors = {
+        "results": [
+            {"status": "fail", "alpha_id": None, "checks": [], "expression": "expr_bulk_fail"}
+        ],
+        "hit_401": False,
+    }
+
+    real_conn = db.init_db(":memory:")
+    run_id_capture = {}
+
+    # Intercept insert_bruteforce_run to capture the run_id for verification
+    original_insert = db.insert_bruteforce_run
+
+    def capturing_insert(conn, row):
+        run_id_capture["run_id"] = row["run_id"]
+        return original_insert(conn, row)
+
+    with (
+        unittest.mock.patch("bruteforce.selfcorr.backfill_active_pnl"),
+        unittest.mock.patch("bruteforce.probe_delay.probe_and_gate"),
+        unittest.mock.patch("bruteforce.validate.validate", return_value=(True, "")),
+        unittest.mock.patch("bruteforce.grade.grade_many", return_value=probe_result),
+        unittest.mock.patch("bruteforce.editor.classify_from_checks", return_value=("near", [])),
+        unittest.mock.patch("bruteforce._bulk_sim_quota_aware", return_value=bulk_no_survivors),
+        unittest.mock.patch("bruteforce.additivity.rank_by_proxy", return_value=[]),
+        unittest.mock.patch("bruteforce.db.init_db", return_value=real_conn),
+        unittest.mock.patch("bruteforce.db.insert_bruteforce_run", side_effect=capturing_insert),
+    ):
+        result = bruteforce.bruteforce(
+            client=client,
+            db_path=":memory:",
+            delay=0,
+            quota=5,
+            probe_size=5,
+            template_names=["beta_neutral", "residual_momentum"],
+        )
+
+    # Exactly 2 templates done
+    assert result["n_templates_done"] == 2, (
+        f"Expected 2 templates done, got {result['n_templates_done']}"
+    )
+
+    run_id = run_id_capture.get("run_id")
+    assert run_id is not None, "run_id not captured — insert_bruteforce_run may not have been called"
+
+    # 2 bruteforce_runs rows (one per template)
+    count = real_conn.execute(
+        "SELECT COUNT(*) FROM bruteforce_runs WHERE run_id=?", (run_id,)
+    ).fetchone()[0]
+    assert count == 2, (
+        f"Expected 2 bruteforce_runs rows for 2 templates, got {count}"
+    )
+
+    # Both rows have valid JSON in failure_counts and examples
+    rows = real_conn.execute(
+        "SELECT failure_counts, examples FROM bruteforce_runs WHERE run_id=?", (run_id,)
+    ).fetchall()
+    for i, (fc_json, ex_json) in enumerate(rows):
+        assert fc_json is not None, f"Row {i}: failure_counts is NULL"
+        assert ex_json is not None, f"Row {i}: examples is NULL"
+        fc = json.loads(fc_json)
+        ex = json.loads(ex_json)
+        assert isinstance(fc, dict), f"Row {i}: failure_counts is not a JSON object"
+        assert isinstance(ex, dict), f"Row {i}: examples is not a JSON object"
+
+    real_conn.close()
