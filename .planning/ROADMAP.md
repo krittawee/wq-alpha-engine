@@ -231,7 +231,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 07-03-PLAN.md — bruteforce.py engine: enumerate→validate-filter→probe/abandon→quota-aware ThreadPoolExecutor bulk-sim→per-template additivity gate→401-clean-stop→failure-aggregate persistence + 5 engine tests
+- [x] 07-03-PLAN.md — bruteforce.py engine: enumerate→validate-filter→probe/abandon→quota-aware ThreadPoolExecutor bulk-sim→per-template additivity gate→401-clean-stop→failure-aggregate persistence + 5 engine tests
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
@@ -276,6 +276,6 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 4. Optimization & Polish | 6/6 | Complete | 2026-06-11 |
 | 5. Delay-0 Feasibility & Plumbing | 3/3 | Complete   | 2026-06-13 |
 | 6. Additivity Gate | 3/3 | Complete   | 2026-06-15 |
-| 7. Brute-Force Tool (Tool B) | 2/4 | In Progress|  |
+| 7. Brute-Force Tool (Tool B) | 3/4 | In Progress|  |
 | 8. Evolve /hunt + Fold /find-alphas | 0/TBD | Not started | - |
 | 9. /iterate Decorrelate Mode | 0/TBD | Not started | - |
