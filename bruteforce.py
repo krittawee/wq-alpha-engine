@@ -45,6 +45,11 @@ def settings_grid_for_archetype(archetype: str) -> list:
     NOTE: "regular" key is intentionally never included — buggy simulate() param
     (project constraint). Only decay, neutralization, truncation are overridden.
 
+    DELAY NOTE: each dict inherits delay from _BASE_SETTINGS (=1). Callers that run
+    at a non-default delay MUST stamp the run's delay into the returned dict before
+    passing it to grade (see _run_template). settings["delay"] takes precedence over
+    grade_one's delay= argument, so a stale delay here silently overrides the request.
+
     Args:
         archetype: Key into ARCHETYPE_HEURISTICS (e.g. "reversal", "momentum").
 
@@ -109,9 +114,9 @@ def _bulk_sim_quota_aware(
             if getattr(getattr(e, "response", None), "status_code", None) == 401:
                 raise  # propagate auth expiry immediately
             # Other HTTP errors: return as error result
-            return {"expression": expr, "status": "error", "alpha_id": None}
-        except Exception:
-            return {"expression": expr, "status": "error", "alpha_id": None}
+            return {"expression": expr, "status": "error", "alpha_id": None, "error": str(e)}
+        except Exception as e:
+            return {"expression": expr, "status": "error", "alpha_id": None, "error": str(e)}
         finally:
             worker_conn.close()
 
@@ -131,10 +136,10 @@ def _bulk_sim_quota_aware(
                     break
                 # Non-401 HTTP error
                 expr = future_to_expr[future]
-                result = {"expression": expr, "status": "error", "alpha_id": None}
-            except Exception:
+                result = {"expression": expr, "status": "error", "alpha_id": None, "error": str(e)}
+            except Exception as e:
                 expr = future_to_expr[future]
-                result = {"expression": expr, "status": "error", "alpha_id": None}
+                result = {"expression": expr, "status": "error", "alpha_id": None, "error": str(e)}
             results.append(result)
             # Check quota — stop draining when no remaining budget
             if quota_remaining <= 0:
@@ -231,13 +236,18 @@ def _run_template(
     sample = templates.probe_spread_sample(valid_combos, slot_names, size=probe_size)
     n_probed = len(sample)
 
-    # Build probe settings from archetype (first combo in grid)
+    # Build probe settings from archetype (first combo in grid).
+    # CRITICAL (delay bug fix): stamp the run's requested delay into the settings dict.
+    # settings_grid_for_archetype inherits delay=1 from _BASE_SETTINGS, and grade_one
+    # gives settings["delay"] precedence over the delay= argument. Without this stamp,
+    # a `--delay 0` run is silently dropped and every sim runs at delay=1 (root cause of
+    # the "delay=0 ignored" + downstream sim errors observed in /tmp/bf_verify.log).
     probe_settings = settings_grid_for_archetype(archetype)[0]
+    probe_settings["delay"] = delay
 
     # Call grade_many for the bounded probe (max probe_size items).
-    # expressions are passed as (expr, probe_settings) tuples so the settings dict
-    # is accessible to test assertions (call_args[0][2][0][1].keys()); settings_map
-    # is ALSO provided so grade_one actually uses the correct settings in production.
+    # expressions are passed as (expr, probe_settings) tuples; settings_map is ALSO
+    # provided so grade_one uses the correct (delay-stamped) settings in production.
     probe_exprs = [(e, probe_settings) for e, _ in sample]
     probe_settings_map = {e: probe_settings for e, _ in sample}
     probe_results = grade.grade_many(
@@ -263,7 +273,11 @@ def _run_template(
         alpha_id = r.get("alpha_id")
 
         if status == "error":
-            _bump_failure("sim_error", expr)
+            # Surface the real error message so abandoned-template failures are debuggable
+            # (previously only the expression was stored, hiding BRAIN/sim error bodies).
+            err = r.get("error")
+            example = f"{expr} :: {err}" if err else expr
+            _bump_failure("sim_error", example)
             continue
 
         if alpha_id:
@@ -291,7 +305,7 @@ def _run_template(
 
     # --- Step 6: bulk-sim survivors (valid combos minus those already probed) ---
     bulk_combos = [
-        (expr, dict(probe_settings))  # reuse probe_settings for bulk; each has BRAIN keys
+        (expr, dict(probe_settings))  # reuse probe_settings (delay-stamped) for bulk
         for expr, _ in valid_combos
         if expr not in probed_exprs_set
     ]
@@ -312,7 +326,9 @@ def _run_template(
         expr = r.get("expression", "")
 
         if status == "error":
-            _bump_failure("sim_error", expr)
+            err = r.get("error")
+            example = f"{expr} :: {err}" if err else expr
+            _bump_failure("sim_error", example)
         elif status == "pass":
             is_pass_ids.append(alpha_id)
         elif status in ("fail", "duplicate", "coerced", "invalid"):
