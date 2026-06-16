@@ -246,9 +246,13 @@ def _run_template(
     probe_settings["delay"] = delay
 
     # Call grade_many for the bounded probe (max probe_size items).
-    # expressions are passed as (expr, probe_settings) tuples; settings_map is ALSO
-    # provided so grade_one uses the correct (delay-stamped) settings in production.
-    probe_exprs = [(e, probe_settings) for e, _ in sample]
+    # Expressions MUST be plain strings: grade_many reads a tuple's 2nd element as
+    # parent_alpha_id, so passing (expr, settings) made the settings dict get bound
+    # as a SQL parameter → "Error binding parameter 3: type 'dict' is not supported"
+    # and every probe sim returned status="error". Settings are delivered solely via
+    # settings_map (expression → delay-stamped settings dict), which is the supported
+    # channel; parent_alpha_id stays None for fresh template combos.
+    probe_exprs = [e for e, _ in sample]
     probe_settings_map = {e: probe_settings for e, _ in sample}
     probe_results = grade.grade_many(
         client,

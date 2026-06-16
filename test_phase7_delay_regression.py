@@ -1,16 +1,21 @@
-"""Regression test for debug session bruteforce-delay0-sim-errors.
+"""Regression tests for debug session bruteforce-delay0-sim-errors.
 
-Root cause: bruteforce._run_template built probe settings from
-settings_grid_for_archetype(), which inherits delay=1 from grade._BASE_SETTINGS.
-grade_one gives settings["delay"] precedence over the delay= argument, so a
-`--delay 0` run was silently dropped — every sim ran at delay=1, and the
-residual_momentum template's sims came back as errors (template abandoned).
+Two distinct bugs surfaced in the first live /bruteforce run; both made every
+residual_momentum probe sim return status="error" and abandon the template:
 
-Fix: _run_template now stamps the run's requested delay into probe_settings
-(probe_settings["delay"] = delay) before passing it to grade_many / bulk-sim.
+1. Delay drop: _run_template built probe settings from settings_grid_for_archetype(),
+   which inherits delay=1 from grade._BASE_SETTINGS. grade_one gives settings["delay"]
+   precedence over the delay= argument, so `--delay 0` was silently dropped.
+   Fix: _run_template stamps probe_settings["delay"] = delay before grading.
 
-This test verifies, with zero real BRAIN calls, that the settings dict reaching
-grade carries the requested delay (0), and that no delay-conflict warning fires.
+2. Dict-as-parent_alpha_id: _run_template passed (expr, settings) tuples to grade_many,
+   which reads item[1] as parent_alpha_id. The settings dict then bound as a SQL
+   parameter — "Error binding parameter 3: type 'dict' is not supported" — so the real
+   failure was masked as opaque "error N/A". (A single-threaded grade_one with a plain
+   string worked fine, which is what isolated the bug.)
+   Fix: _run_template passes plain-string expressions; settings travel via settings_map.
+
+All tests run with zero real BRAIN calls.
 """
 
 import unittest.mock
@@ -35,12 +40,14 @@ def test_run_template_stamps_requested_delay_into_settings():
         # Record what the engine actually sent down to grade.
         captured["settings_map"] = kwargs.get("settings_map")
         captured["delay_kwarg"] = kwargs.get("delay")
-        captured["inline_settings"] = [
-            item[1] for item in expressions if isinstance(item, tuple) and len(item) > 1
-        ]
+        captured["expressions"] = list(expressions)
+
+        def _expr(item):
+            return item[0] if isinstance(item, tuple) else item
+
         # Return a non-surviving probe so the pipeline abandons cleanly (no bulk-sim).
         return [
-            {"status": "fail", "alpha_id": None, "checks": [], "expression": e[0]}
+            {"status": "fail", "alpha_id": None, "checks": [], "expression": _expr(e)}
             for e in expressions
         ]
 
@@ -79,9 +86,15 @@ def test_run_template_stamps_requested_delay_into_settings():
             f"(stale _BASE_SETTINGS delay=1 indicates the --delay 0 drop bug)"
         )
 
-    for s in captured["inline_settings"]:
-        assert s.get("delay") == 0, (
-            f"inline tuple settings delay={s.get('delay')!r}, expected 0"
+    # Probe expressions must be PLAIN STRINGS, not (expr, settings) tuples.
+    # grade_many reads a tuple's 2nd element as parent_alpha_id; passing the settings
+    # dict there bound a dict as a SQL parameter ("Error binding parameter 3: type
+    # 'dict' is not supported") and every probe sim returned status="error". Settings
+    # travel via settings_map only. See debug session bruteforce-delay0-sim-errors.
+    for e in captured["expressions"]:
+        assert isinstance(e, str), (
+            f"grade_many received {type(e).__name__} {e!r}; probe expressions must be "
+            f"plain strings so settings never reach parent_alpha_id"
         )
 
     real_conn.close()
@@ -125,5 +138,43 @@ def test_grade_one_no_warning_when_settings_delay_matches():
         f"Unexpected delay-conflict warning when settings['delay']==delay==0: {stderr!r}"
     )
     assert result["status"] == "invalid", "expected early invalid return (validation stubbed False)"
+
+    conn.close()
+
+
+def test_grade_many_plain_strings_keep_parent_alpha_id_none():
+    """Plain-string expressions must reach grade_one with parent_alpha_id=None.
+
+    Pins the dict-as-parent_alpha_id bug: bruteforce passed (expr, settings) tuples to
+    grade_many, which reads item[1] as parent_alpha_id. The settings dict then bound as
+    a SQL parameter ("Error binding parameter 3: type 'dict' is not supported") and every
+    probe sim errored. With plain strings + settings_map, parent_alpha_id stays None and
+    the matched settings dict is forwarded via the settings= kwarg.
+    """
+    import grade
+
+    conn = db.init_db(":memory:")
+    client = MagicMock()
+    seen = []
+
+    def fake_grade_one(client, conn, expr, run_id, **kwargs):
+        seen.append({"parent_alpha_id": kwargs.get("parent_alpha_id"),
+                     "settings": kwargs.get("settings")})
+        return {"expression": expr, "status": "fail", "alpha_id": None}
+
+    settings = {**grade._BASE_SETTINGS, "delay": 0}
+    exprs = ["rank(close)", "rank(open)"]
+    smap = {e: settings for e in exprs}
+
+    with unittest.mock.patch("grade.grade_one", side_effect=fake_grade_one):
+        grade.grade_many(client, conn, exprs, "run-x", max_workers=1, settings_map=smap)
+
+    assert seen, "grade_one should have been called"
+    for call in seen:
+        assert call["parent_alpha_id"] is None, (
+            f"parent_alpha_id={call['parent_alpha_id']!r}; a non-None/dict value here is "
+            f"the tuple-misread bug that bound a dict into SQL"
+        )
+        assert call["settings"] is settings, "settings must arrive via settings_map"
 
     conn.close()
