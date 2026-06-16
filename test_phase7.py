@@ -655,3 +655,36 @@ def test_bruteforce_runs_row_per_template():
         assert isinstance(ex, dict), f"Row {i}: examples is not a JSON object"
 
     real_conn.close()
+
+
+# ---------------------------------------------------------------------------
+# BF-05 static check (Plan 07-04): AI-free constraint
+# ---------------------------------------------------------------------------
+
+
+def test_no_llm_imports():
+    """BF-05: bruteforce.py and templates.py contain no LLM/AI library references.
+
+    Opens each file as raw text and asserts that none of the following terms appear
+    (case-insensitive): 'claude', 'anthropic', 'llm', 'openai'.
+
+    This is the static verification that Tool B is fully AI-free — no model API
+    is called during a brute-force run.
+    """
+    import pathlib
+
+    terms = ["claude", "anthropic", "llm", "openai"]
+    files_to_check = ["bruteforce.py", "templates.py"]
+
+    # Resolve paths relative to this test file's directory
+    base_dir = pathlib.Path(__file__).parent
+
+    for filename in files_to_check:
+        filepath = base_dir / filename
+        assert filepath.exists(), f"{filename} not found at {filepath}"
+        source = filepath.read_text(encoding="utf-8").lower()
+        for term in terms:
+            assert term not in source, (
+                f"AI/LLM term '{term}' found in {filename} — "
+                f"bruteforce tool must be AI-free (BF-05)"
+            )
