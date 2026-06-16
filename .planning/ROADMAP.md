@@ -279,3 +279,19 @@ Phases execute in numeric order: 1 → 2 → 3 → 4 → 5 → 6 → 7 → 8 →
 | 7. Brute-Force Tool (Tool B) | 4/4 | Complete   | 2026-06-16 |
 | 8. Evolve /hunt + Fold /find-alphas | 0/TBD | Not started | - |
 | 9. /iterate Decorrelate Mode | 0/TBD | Not started | - |
+
+## Backlog
+
+### Phase 999.1: Hunt→Bruteforce template bridge (BACKLOG)
+
+**Goal:** [Captured for future planning] Bridge the LLM loop (`/hunt`) and the AI-free sweep (`/bruteforce`) so the LLM is spent only on the high-value creative step — spotting a promising alpha *shape* — while the cheap mechanical breadth (sweeping all windows/fields) runs AI-free. When the `/hunt` researcher identifies a fruitful archetype + expression skeleton, it emits a parameterized TEMPLATE (expression with slots) and hands it to the existing bruteforce engine (`expand_slots → validate → probe → bulk-sim → additivity gate`) instead of having the ideator LLM enumerate each expression. Net effect: far fewer LLM calls per discovered family; usable even when the Claude quota is exhausted.
+
+**Why:** Today the two tools share zero code (verified: no cross-imports between hunt/researcher/ideator and bruteforce/templates; the 4 templates are a hardcoded hand-authored list). The bridge does not exist and is not covered by Phase 8 (evolve `/hunt` ranking + fold `/find-alphas`) or Phase 9 (`/iterate` decorrelate).
+
+**Scope sketch:** researcher-emits-template path + a TEMPLATES registry that accepts dynamically-generated shapes (validated and catalog-grounded like the static ones). Reuses the bruteforce engine unchanged.
+
+**Requirements:** TBD
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (promote with /gsd:review-backlog when ready)
