@@ -32,6 +32,7 @@ import db
 import editor
 import fsa
 import grade
+import handoff
 import ideator
 import probe_delay
 import researcher
@@ -198,6 +199,9 @@ def hunt(
     max_depth: int = 2,
     max_sims: int = 30,
     delay: int = 1,
+    bruteforce_handoff: bool = False,
+    max_templates: int = 3,
+    probe_size: int = 5,
 ) -> dict:
     """Autonomous alpha discovery loop (D-16/D-17/D-20).
 
@@ -218,6 +222,10 @@ def hunt(
             probe_delay.probe_and_gate is called BEFORE the main simulation loop
             as the D-04 fail-fast feasibility guard. DelayCoercedError propagates
             to the caller unchanged — never swallowed here.
+        bruteforce_handoff: When true, run generated-template handoff instead of
+            the existing research→ideate→grade→mutate loop.
+        max_templates: Generated-template attempt cap for handoff mode.
+        probe_size: Per-template probe sample size for handoff mode.
 
     Returns:
         dict with keys:
@@ -229,6 +237,16 @@ def hunt(
             diversity_before: fsa.diversity_metric snapshot before first grade_many
             diversity_after: fsa.diversity_metric snapshot after final generation
     """
+    if bruteforce_handoff:
+        return handoff.run_bruteforce_handoff(
+            client=client,
+            db_path=db_path,
+            max_sims=max_sims,
+            max_templates=max_templates,
+            delay=delay,
+            probe_size=probe_size,
+        )
+
     conn = db.init_db(db_path)
 
     try:
@@ -509,6 +527,23 @@ if __name__ == "__main__":
         default=1,
         help="Simulation delay in days (0 or 1; default: 1). Use --delay 0 for delay-0 alphas.",
     )
+    parser.add_argument(
+        "--bruteforce-handoff",
+        action="store_true",
+        help="Run the LLM→template→bruteforce sweep instead of the research→ideate→grade loop.",
+    )
+    parser.add_argument(
+        "--max-templates",
+        type=int,
+        default=3,
+        help="Generated-template attempt cap for --bruteforce-handoff (default: 3).",
+    )
+    parser.add_argument(
+        "--probe-size",
+        type=int,
+        default=5,
+        help="Per-template probe sample size for --bruteforce-handoff (default: 5).",
+    )
     args = parser.parse_args()
 
     # Single-shot auth — called ONCE before the loop (CLAUDE.md constraint).
@@ -524,6 +559,9 @@ if __name__ == "__main__":
             max_depth=args.max_depth,
             max_sims=args.max_sims,
             delay=args.delay,
+            bruteforce_handoff=args.bruteforce_handoff,
+            max_templates=args.max_templates,
+            probe_size=args.probe_size,
         )
     except editor.EditorAuthError as e:
         # WR-08: Claude CLI auth failure — NOT a BRAIN session expiry.

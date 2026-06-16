@@ -57,6 +57,7 @@ _DDL = [
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id        TEXT NOT NULL,
   template_name TEXT NOT NULL,
+  generated_template_id INTEGER,
   delay         INTEGER,
   quota_target  INTEGER,
   n_combos      INTEGER,
@@ -73,6 +74,24 @@ _DDL = [
   finished_at   TEXT
 )""",
     "CREATE INDEX IF NOT EXISTS idx_bruteforce_runs_run ON bruteforce_runs(run_id)",
+    # Phase 999.1: generated_templates — dynamic /hunt→/bruteforce handoff registry
+    """CREATE TABLE IF NOT EXISTS generated_templates (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  template_name       TEXT NOT NULL,
+  expression          TEXT NOT NULL,
+  slots_json          TEXT NOT NULL,
+  settings_archetype  TEXT,
+  source_run_id       TEXT,
+  source_thesis_json  TEXT,
+  prompt_version      TEXT,
+  llm_model           TEXT,
+  validation_status   TEXT,
+  n_combos            INTEGER,
+  n_validated         INTEGER,
+  failure_reason      TEXT,
+  created_at          TEXT
+)""",
+    "CREATE INDEX IF NOT EXISTS idx_generated_templates_run ON generated_templates(source_run_id)",
 ]
 
 # Column order for alphas INSERT OR REPLACE (matches schema definition order)
@@ -112,6 +131,12 @@ def init_db(path: str = DB_PATH) -> sqlite3.Connection:
     # Phase 4 idempotent migration: add note_path TEXT column to alphas table.
     try:
         conn.execute("ALTER TABLE alphas ADD COLUMN note_path TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # Column already exists — idempotent
+    # Phase 999.1 migration: link bruteforce_runs rows to generated_templates.
+    try:
+        conn.execute("ALTER TABLE bruteforce_runs ADD COLUMN generated_template_id INTEGER")
         conn.commit()
     except sqlite3.OperationalError:
         pass  # Column already exists — idempotent
@@ -264,11 +289,42 @@ def expr_exists(
 
 # Known columns for bruteforce_runs — used to filter caller-supplied dicts.
 _BRUTEFORCE_RUN_COLS = [
-    "run_id", "template_name", "delay", "quota_target",
+    "run_id", "template_name", "generated_template_id", "delay", "quota_target",
     "n_combos", "n_validated", "n_probed", "n_simmed",
     "n_survivors", "n_additive", "quota_hit", "partial",
     "failure_counts", "examples", "started_at", "finished_at",
 ]
+
+_GENERATED_TEMPLATE_COLS = [
+    "template_name", "expression", "slots_json", "settings_archetype",
+    "source_run_id", "source_thesis_json", "prompt_version", "llm_model",
+    "validation_status", "n_combos", "n_validated", "failure_reason",
+    "created_at",
+]
+
+
+def insert_generated_template(conn: sqlite3.Connection, row: dict) -> int:
+    """Insert a generated template registry row and return its integer id."""
+    cols = [c for c in _GENERATED_TEMPLATE_COLS if c in row]
+    col_list = ", ".join(cols)
+    placeholders = ", ".join("?" for _ in cols)
+    cur = conn.execute(
+        f"INSERT INTO generated_templates ({col_list}) VALUES ({placeholders})",
+        tuple(row[c] for c in cols),
+    )
+    conn.commit()
+    return cur.lastrowid
+
+
+def update_generated_template(conn: sqlite3.Connection, rowid: int, updates: dict) -> None:
+    """Patch an existing generated_templates row by id."""
+    cols = [c for c in _GENERATED_TEMPLATE_COLS if c in updates]
+    if not cols:
+        return
+    set_clause = ", ".join(f"{c}=?" for c in cols)
+    values = tuple(updates[c] for c in cols) + (rowid,)
+    conn.execute(f"UPDATE generated_templates SET {set_clause} WHERE id=?", values)
+    conn.commit()
 
 
 def insert_bruteforce_run(conn: sqlite3.Connection, row: dict) -> int:

@@ -6,7 +6,7 @@ No external model dependencies. Single-shot auth; 401 stops cleanly without re-a
 
 Public API:
     settings_grid_for_archetype(archetype: str) -> list[dict]
-    bruteforce(client, db_path, delay, quota, probe_size, template_names) -> dict
+    bruteforce(client, db_path, delay, quota, probe_size, template_names, generated_templates) -> dict
 """
 
 import json
@@ -163,6 +163,7 @@ def _run_template(
     quota_remaining: int,
     delay: int,
     probe_size: int,
+    max_sims_remaining: Optional[int] = None,
 ) -> dict:
     """Run the full validate → probe → bulk-sim → additivity pipeline for one template.
 
@@ -179,6 +180,7 @@ def _run_template(
         quota_remaining: Additive survivors still needed to hit quota.
         delay: Simulation delay in days.
         probe_size: Max probe sample size (default 5).
+        max_sims_remaining: Optional hard cap on sims this template may enqueue.
 
     Returns:
         Dict with keys: n_combos, n_validated, n_probed, n_simmed, n_survivors,
@@ -230,10 +232,27 @@ def _run_template(
             "failure_counts": failure_counts,
             "examples": examples,
         }
+    if max_sims_remaining is not None and max_sims_remaining <= 0:
+        return {
+            "n_combos": n_combos,
+            "n_validated": n_validated,
+            "n_probed": 0,
+            "n_simmed": 0,
+            "n_survivors": 0,
+            "n_additive": 0,
+            "probe_abandoned": True,
+            "hit_401": False,
+            "additive_alpha_ids": [],
+            "failure_counts": failure_counts,
+            "examples": examples,
+        }
 
     # --- Step 4: probe sample ---
     slot_names = list(template.get("slots", {}).keys())
-    sample = templates.probe_spread_sample(valid_combos, slot_names, size=probe_size)
+    probe_cap = probe_size
+    if max_sims_remaining is not None:
+        probe_cap = min(probe_cap, max_sims_remaining)
+    sample = templates.probe_spread_sample(valid_combos, slot_names, size=probe_cap)
     n_probed = len(sample)
 
     # Build probe settings from archetype (first combo in grid).
@@ -313,6 +332,9 @@ def _run_template(
         for expr, _ in valid_combos
         if expr not in probed_exprs_set
     ]
+    if max_sims_remaining is not None:
+        bulk_cap = max(0, max_sims_remaining - n_probed)
+        bulk_combos = bulk_combos[:bulk_cap]
 
     bulk_result = _bulk_sim_quota_aware(
         client, db_path, bulk_combos, run_id, quota_remaining, delay
@@ -419,6 +441,8 @@ def bruteforce(
     quota: int = 5,
     probe_size: int = 5,
     template_names: Optional[list] = None,
+    generated_templates: Optional[list] = None,
+    max_sims: Optional[int] = None,
 ) -> dict:
     """Brute-force alpha discovery engine (Tool B).
 
@@ -437,13 +461,17 @@ def bruteforce(
         quota: Stop after this many additive survivors are found.
         probe_size: Max combos to probe per template (default 5).
         template_names: If provided, only run templates with these names.
+        generated_templates: Optional runtime template dicts from /hunt handoff.
+            Each may include generated_template_id for bruteforce_runs linkage.
+        max_sims: Optional hard ceiling across probe + bulk expressions for this call.
 
     Returns:
         dict with keys:
             quota_count: Number of confirmed-additive survivors found.
             n_templates_done: Number of templates fully processed.
-            stop_reason: "quota_met" | "dry" (loop exhausted).
+            stop_reason: "quota_met" | "sim_budget" | "dry" (loop exhausted).
             additive_ids: List of confirmed-additive alpha_ids.
+            sims_used: Actual grade_many simulations counted by the engine.
     """
     conn = db.init_db(db_path)
     run_id = str(uuid.uuid4())
@@ -467,11 +495,15 @@ def bruteforce(
         probe_delay.probe_and_gate(client, conn, requested_delay=delay)
         print(f"[bruteforce] probe passed — BRAIN confirmed delay={delay}")
 
-    # Determine which templates to run
-    templates_to_run = [
-        t for t in templates.TEMPLATES
-        if template_names is None or t["name"] in template_names
-    ]
+    # Determine which templates to run. Generated templates bypass the static
+    # registry but still use the same validate/probe/bulk/additivity engine.
+    if generated_templates is not None:
+        templates_to_run = list(generated_templates)
+    else:
+        templates_to_run = [
+            t for t in templates.TEMPLATES
+            if template_names is None or t["name"] in template_names
+        ]
 
     quota_count = 0
     n_templates_done = 0
@@ -481,6 +513,9 @@ def bruteforce(
 
     try:
         for template in templates_to_run:
+            if max_sims is not None and n_simmed_total >= max_sims:
+                stop_reason = "sim_budget"
+                break
             tname = template.get("name", "unknown")
             started_at_t = datetime.now(timezone.utc).isoformat()
 
@@ -488,6 +523,7 @@ def bruteforce(
             rowid = db.insert_bruteforce_run(conn, {
                 "run_id": run_id,
                 "template_name": tname,
+                "generated_template_id": template.get("generated_template_id"),
                 "delay": delay,
                 "quota_target": quota,
                 "started_at": started_at_t,
@@ -509,6 +545,7 @@ def bruteforce(
                     quota_remaining=quota - quota_count,
                     delay=delay,
                     probe_size=probe_size,
+                    max_sims_remaining=None if max_sims is None else max_sims - n_simmed_total,
                 )
             except requests.exceptions.HTTPError as e:
                 if getattr(getattr(e, "response", None), "status_code", None) == 401:
@@ -559,6 +596,9 @@ def bruteforce(
             if quota_count >= quota:
                 stop_reason = "quota_met"
                 break
+            if max_sims is not None and n_simmed_total >= max_sims:
+                stop_reason = "sim_budget"
+                break
 
     except requests.exceptions.HTTPError as e:
         if getattr(getattr(e, "response", None), "status_code", None) == 401:
@@ -588,6 +628,8 @@ def bruteforce(
         "n_templates_done": n_templates_done,
         "stop_reason": stop_reason,
         "additive_ids": additive_ids,
+        "sims_used": n_simmed_total,
+        "run_id": run_id,
     }
 
 

@@ -83,12 +83,30 @@ def validate(conn: sqlite3.Connection, expression: str) -> tuple[bool, str]:
     }
 
     # Step 6 — Validate each bare field token against the datafields table
+    vector_fields: set[str] = set()
     for token in bare_field_tokens:
         row = conn.execute(
-            "SELECT 1 FROM datafields WHERE id=? LIMIT 1", (token,)
+            "SELECT type FROM datafields WHERE id=? LIMIT 1", (token,)
         ).fetchone()
         if row is None:
             return False, f"unknown data field: {token}"
+        if row[0] == "VECTOR":
+            vector_fields.add(token)
 
-    # Step 7 — All checks passed
+    # Step 7 — VECTOR fields must be reduced to a scalar before scalar operators.
+    # A VECTOR field used without any vec_* reduction operator (vec_avg, vec_sum,
+    # vec_max, ...) is rejected by BRAIN at sim time and otherwise wastes a slot.
+    # Guard: if any VECTOR field is referenced, at least one vec_* operator must
+    # appear in the expression. (Token-level — does not prove it wraps that exact
+    # field, but catches the common "scalar op straight on a VECTOR field" error.)
+    if vector_fields:
+        has_vec_reduction = any(op.startswith("vec_") for op in operator_tokens)
+        if not has_vec_reduction:
+            field = sorted(vector_fields)[0]
+            return False, (
+                f"VECTOR field '{field}' used without a vec_* reduction "
+                f"(e.g. vec_avg/vec_sum)"
+            )
+
+    # Step 8 — All checks passed
     return True, ""

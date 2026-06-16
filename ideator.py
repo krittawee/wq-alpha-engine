@@ -11,11 +11,13 @@ No grade/simulate/BRAIN API calls are made here.
 
 Public API:
     generate_candidates(conn, thesis, n=None) -> list[dict]
+    generate_template(conn, thesis, feedback=None, additivity_hint=None) -> dict
     queueable(candidates) -> list[dict]
     to_seeds_text(candidates) -> str
 """
 
 import itertools
+import json
 import re
 import sqlite3
 from typing import Optional
@@ -436,6 +438,114 @@ def generate_candidates(
         })
 
     return candidates
+
+
+def build_additivity_hint(conn: sqlite3.Connection, limit: int = 5) -> str:
+    """Return offline additivity steering text from stored alphas only."""
+    rows = conn.execute(
+        """
+        SELECT archetype, COUNT(*) AS n
+        FROM alphas
+        WHERE status IN ('active', 'pass', 'submitted') AND archetype IS NOT NULL
+        GROUP BY archetype
+        ORDER BY n DESC, archetype
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    if not rows:
+        return "No stored active/pass archetype clusters yet; prefer structurally novel shapes."
+    crowded = ", ".join(f"{archetype}:{count}" for archetype, count in rows)
+    return (
+        "Existing active/pass archetype clusters: "
+        f"{crowded}. Prefer fields/operators outside crowded clusters when thesis allows."
+    )
+
+
+def build_template_prompt(
+    conn: sqlite3.Connection,
+    thesis: dict,
+    feedback: Optional[str] = None,
+    additivity_hint: Optional[str] = None,
+) -> str:
+    """Build strict-JSON template-generation instructions for an external LLM."""
+    archetype = thesis.get("archetype", "reversal")
+    source_ops = thesis.get("source_operators", [])
+    source_fields = thesis.get("source_datafields", [])
+    payload = {
+        "task": "Return one JSON object only. No markdown.",
+        "schema": {
+            "name": "snake_case",
+            "expression": "FastExpr with {slot} placeholders",
+            "slots": {"slot_name": ["literal"]},
+            "settings_archetype": "optimizer archetype key",
+        },
+        "thesis": thesis,
+        "catalog_allowlist": {
+            "operators": source_ops,
+            "datafields": source_fields,
+        },
+        "additivity_hint": additivity_hint or build_additivity_hint(conn),
+        "rules": [
+            "Use only operators and fields from catalog_allowlist.",
+            "A VECTOR-type field MUST be reduced with a vec_* operator "
+            "(e.g. vec_avg(field), vec_sum(field)) before any scalar/time-series "
+            "operator. Never apply ts_mean/rank/etc. directly to a VECTOR field.",
+            "MATRIX and DOUBLE fields are used directly.",
+        ],
+        "feedback": feedback or "",
+        "valid_example": {
+            "name": f"{archetype}_template",
+            "expression": "rank(ts_mean({field}, {window}))",
+            "slots": {"field": source_fields[:3] or ["close"], "window": [5, 10, 20]},
+            "settings_archetype": archetype,
+        },
+        "invalid_example_fix": {
+            "invalid": {"expression": "rank(unknown_op({field}))"},
+            "fix": "Use only verified operators and fields from catalog_allowlist.",
+        },
+    }
+    return json.dumps(payload, indent=2, sort_keys=True)
+
+
+def generate_template(
+    conn: sqlite3.Connection,
+    thesis: dict,
+    feedback: Optional[str] = None,
+    additivity_hint: Optional[str] = None,
+) -> dict:
+    """Generate one parameterized template dict from a thesis.
+
+    This default is deterministic and mockable. A caller can replace it with an
+    LLM-backed function, while offline tests assert the handoff contract without
+    invoking external models.
+    """
+    archetype = thesis.get("archetype", "reversal")
+    fields = list(thesis.get("source_datafields") or [])
+    field = fields[0] if fields else "close"
+    name = re.sub(r"[^a-z0-9_]+", "_", f"{archetype}_generated").strip("_")
+
+    # Type-aware expression: a VECTOR field must be reduced with vec_avg before a
+    # scalar time-series op, else BRAIN errors at sim time (the static templates do
+    # the same). MATRIX/DOUBLE fields are used directly.
+    row = conn.execute(
+        "SELECT type FROM datafields WHERE id=? LIMIT 1", (field,)
+    ).fetchone()
+    field_type = row[0] if row else None
+    if field_type == "VECTOR":
+        expression = "rank(ts_mean(vec_avg({field}), {window}))"
+    else:
+        expression = "rank(ts_mean({field}, {window}))"
+
+    return {
+        "name": name or "generated_template",
+        "archetype": archetype,
+        "description": "Generated handoff template from researcher thesis",
+        "expression": expression,
+        "slots": {"field": [field], "window": [5, 10, 20]},
+        "settings_archetype": thesis.get("settings_archetype", archetype),
+        "prompt": build_template_prompt(conn, thesis, feedback, additivity_hint),
+    }
 
 
 def queueable(candidates: list[dict]) -> list[dict]:
