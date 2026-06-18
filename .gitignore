@@ -6,6 +6,8 @@ __pycache__/
 *.pyc
 results/
 *.log
+secrets/
+.ipynb_checkpoints/
 PLAYBOOK_delay0.md
 pnl_cache/
 *.db
