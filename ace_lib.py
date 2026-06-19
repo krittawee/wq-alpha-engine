@@ -1563,7 +1563,7 @@ def get_datafields(
     region: str = "USA",
     delay: int = 1,
     universe: str = "TOP3000",
-    search: str = "",
+    search: str = "/",
 ) -> pd.DataFrame:
     """
     Retrieve available datafields based on specified parameters.
